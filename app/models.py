@@ -7,6 +7,7 @@ class Market(BaseModel):
     name: str
     category: str
     session: str | None = None
+    preferred_sessions: list[str] = Field(default_factory=list)
     is_open: bool | None = None
     closed_reason: str | None = None
 
@@ -57,6 +58,17 @@ class ModelSignal(BaseModel):
     bias: float
 
 
+class SessionSignal(BaseModel):
+    current_session: str
+    active_sessions: list[str]
+    preferred_sessions: list[str]
+    alignment: str
+    suggestion: str
+    score_adjustment: float
+    confidence: int = Field(ge=0, le=100)
+    reasons: list[str]
+
+
 class Signal(BaseModel):
     market: Market
     interval: str
@@ -72,5 +84,6 @@ class Signal(BaseModel):
     features: dict[str, float] | None = None
     news: NewsSentiment | None = None
     model: ModelSignal | None = None
+    session: SessionSignal | None = None
     risk: RiskPlan | None
     last_candle: Candle

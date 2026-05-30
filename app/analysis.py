@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 
 from app.learning import AdaptiveSignalModel, aggregate_features
+from app.config import get_settings
 from app.models import Candle, Market, NewsSentiment, RiskPlan, Signal
+from app.session import recommend_session_entry
 
 
 def _rsi(close: pd.Series, length: int = 14) -> pd.Series:
@@ -121,6 +123,7 @@ def analyze_market(
     news: NewsSentiment | None = None,
     learner: AdaptiveSignalModel | None = None,
 ) -> Signal:
+    settings = get_settings()
     if len(frame) < 30:
         raise ValueError("At least 30 candles are needed for signal analysis")
 
@@ -203,6 +206,14 @@ def analyze_market(
     else:
         model_adjustment = 0.0
 
+    session_signal = recommend_session_entry(market, now=data.index[-1].to_pydatetime())
+    if settings.enable_session_suggestions:
+        score += session_signal.score_adjustment
+        if session_signal.alignment == "aligned":
+            reasons.append(session_signal.suggestion)
+        else:
+            warnings.append(session_signal.suggestion)
+
     if abs(score) < 1.25:
         direction = "neutral"
         strategy = "Wait for confirmation"
@@ -269,6 +280,7 @@ def analyze_market(
         features=feature_map,
         news=news,
         model=model_signal,
+        session=session_signal,
         risk=risk,
         last_candle=Candle(
             time=timestamp.isoformat(),

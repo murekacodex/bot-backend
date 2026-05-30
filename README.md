@@ -48,7 +48,10 @@ Environment variables:
 - `NEWS_LOOKBACK_HOURS`: maximum article age used for sentiment.
 - `FILTER_CLOSED_MARKETS`: skip closed markets from `/markets` and `/signals`.
 - `ENABLE_LEARNING`: turn on the adaptive model that updates from prior predictions.
+- `ENABLE_SESSION_SUGGESTIONS`: add Asia/London/New York entry timing hints to signals.
 - `LEARNING_HORIZON_HOURS`: minimum age before a prediction can be scored.
 - `LEARNING_MIN_MOVE_PCT`: minimum realized move used to label a past prediction.
 - `LEARNING_RATE`: online update rate for the learner.
+- `SESSION_ALIGNMENT_BOOST`: score boost when the current session matches the market.
+- `SESSION_OFFSESSION_PENALTY`: score penalty when the current session is a poor fit.
 - `MODEL_STATE_PATH`: file path used to persist learner state.
