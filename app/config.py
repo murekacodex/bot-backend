@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     enable_news_analysis: bool = Field(default=True, alias="ENABLE_NEWS_ANALYSIS")
     news_cache_ttl_seconds: int = Field(default=900, alias="NEWS_CACHE_TTL_SECONDS")
     news_lookback_hours: int = Field(default=24, alias="NEWS_LOOKBACK_HOURS")
+    filter_closed_markets: bool = Field(default=True, alias="FILTER_CLOSED_MARKETS")
+    enable_learning: bool = Field(default=True, alias="ENABLE_LEARNING")
+    learning_horizon_hours: int = Field(default=24, alias="LEARNING_HORIZON_HOURS")
+    learning_min_move_pct: float = Field(default=0.0015, alias="LEARNING_MIN_MOVE_PCT")
+    learning_rate: float = Field(default=0.08, alias="LEARNING_RATE")
+    model_state_path: str = Field(default="data/model_state.json", alias="MODEL_STATE_PATH")
 
     @property
     def cors_origin_list(self) -> list[str]:

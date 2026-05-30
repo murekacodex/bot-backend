@@ -3,12 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import analyze_market
 from app.config import get_settings
+from app.learning import AdaptiveSignalModel
 from app.market_data import dataframe_to_candles, fetch_candles
 from app.markets import MARKETS, get_market
 from app.models import Candle, Market, NewsSentiment, Signal
 from app.news import fetch_news_sentiment
+from app.session import attach_market_status
 
 settings = get_settings()
+learner = AdaptiveSignalModel()
 
 app = FastAPI(
     title="Forex Signal Bot",
@@ -31,8 +34,11 @@ def health() -> dict[str, str]:
 
 
 @app.get("/markets", response_model=list[Market])
-def markets() -> list[Market]:
-    return list(MARKETS.values())
+def markets(include_closed: bool = Query(default=False)) -> list[Market]:
+    markets = [attach_market_status(market) for market in MARKETS.values()]
+    if settings.filter_closed_markets and not include_closed:
+        return [market for market in markets if market.is_open]
+    return markets
 
 
 @app.get("/candles/{code}", response_model=list[Candle])
@@ -67,15 +73,16 @@ def signals(
     interval: str = Query(default=settings.default_interval),
     period: str = Query(default=settings.default_period),
     include_news: bool = Query(default=settings.enable_news_analysis),
+    include_closed: bool = Query(default=False),
 ) -> list[Signal]:
     output: list[Signal] = []
     errors: list[str] = []
 
-    for market in MARKETS.values():
+    for market in markets(include_closed=include_closed):
         try:
             frame = fetch_candles(market, interval=interval, period=period)
             market_news = fetch_news_sentiment(market) if include_news else None
-            output.append(analyze_market(market, frame, interval=interval, period=period, news=market_news))
+            output.append(analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner))
         except Exception as exc:  # Keep one bad data source from hiding other signals.
             errors.append(f"{market.code}: {exc}")
 
@@ -94,9 +101,12 @@ def signal(
 ) -> Signal:
     try:
         market = get_market(code)
+        market = attach_market_status(market)
+        if settings.filter_closed_markets and not market.is_open:
+            raise HTTPException(status_code=409, detail=market.closed_reason or "Market is closed")
         frame = fetch_candles(market, interval=interval, period=period)
         market_news = fetch_news_sentiment(market) if include_news else None
-        return analyze_market(market, frame, interval=interval, period=period, news=market_news)
+        return analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

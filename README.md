@@ -23,6 +23,11 @@ This folder contains the Heroku files:
 
 Deploy from inside `backend/` or use `git subtree push --prefix backend heroku main`.
 
+Run both process types in Heroku:
+
+- `web` serves the API.
+- `worker` updates the learner from past predictions.
+
 Set CORS for your deployed React app:
 
 ```bash
@@ -41,3 +46,9 @@ Environment variables:
 - `ENABLE_NEWS_ANALYSIS`: include Yahoo Finance news sentiment in signal decisions.
 - `NEWS_CACHE_TTL_SECONDS`: how long news sentiment stays cached.
 - `NEWS_LOOKBACK_HOURS`: maximum article age used for sentiment.
+- `FILTER_CLOSED_MARKETS`: skip closed markets from `/markets` and `/signals`.
+- `ENABLE_LEARNING`: turn on the adaptive model that updates from prior predictions.
+- `LEARNING_HORIZON_HOURS`: minimum age before a prediction can be scored.
+- `LEARNING_MIN_MOVE_PCT`: minimum realized move used to label a past prediction.
+- `LEARNING_RATE`: online update rate for the learner.
+- `MODEL_STATE_PATH`: file path used to persist learner state.

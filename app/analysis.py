@@ -4,6 +4,7 @@ from datetime import timezone
 import numpy as np
 import pandas as pd
 
+from app.learning import AdaptiveSignalModel, aggregate_features
 from app.models import Candle, Market, NewsSentiment, RiskPlan, Signal
 
 
@@ -85,7 +86,41 @@ def _news_score(news: NewsSentiment | None) -> float:
     return max(-1.5, min(1.5, news.score * 0.75))
 
 
-def analyze_market(market: Market, frame: pd.DataFrame, interval: str, period: str, news: NewsSentiment | None = None) -> Signal:
+def _build_feature_map(latest: pd.Series, news: NewsSentiment | None, pattern_score: float, score: float) -> dict[str, float]:
+    close = float(latest.close)
+    ema_9 = float(latest.ema_9)
+    ema_21 = float(latest.ema_21)
+    sma_50 = float(latest.sma_50) if pd.notna(latest.sma_50) else close
+    rsi = float(latest.rsi) if pd.notna(latest.rsi) else 50.0
+    atr = float(latest.atr) if pd.notna(latest.atr) else 0.0
+    macd = float(latest.macd)
+    macd_signal = float(latest.macd_signal)
+    news_score = float(news.score) if news else 0.0
+    news_confidence = float(news.confidence) / 100.0 if news else 0.0
+
+    return aggregate_features(
+        [
+            ("ema_gap", (ema_9 - ema_21) / max(close, 1e-12)),
+            ("price_vs_sma50", (close - sma_50) / max(close, 1e-12)),
+            ("rsi_centered", (50.0 - rsi) / 50.0),
+            ("atr_ratio", atr / max(close, 1e-12)),
+            ("macd_delta", (macd - macd_signal) / max(abs(close), 1e-12)),
+            ("news_score", news_score / 3.0),
+            ("news_confidence", news_confidence),
+            ("pattern_score", pattern_score / 4.0),
+            ("technical_score", score / 6.0),
+        ]
+    )
+
+
+def analyze_market(
+    market: Market,
+    frame: pd.DataFrame,
+    interval: str,
+    period: str,
+    news: NewsSentiment | None = None,
+    learner: AdaptiveSignalModel | None = None,
+) -> Signal:
     if len(frame) < 30:
         raise ValueError("At least 30 candles are needed for signal analysis")
 
@@ -159,6 +194,15 @@ def analyze_market(market: Market, frame: pd.DataFrame, interval: str, period: s
     if pd.isna(latest.atr) or latest.atr == 0:
         warnings.append("ATR is unavailable, so risk levels are omitted")
 
+    feature_map = _build_feature_map(latest, news, pattern_score, score)
+    model_signal = learner.summary(feature_map) if learner else None
+    if model_signal:
+        model_adjustment = model_signal.adjustment
+        score += model_adjustment
+        reasons.append(f"Adaptive model adjusted the score by {model_adjustment:+.2f}")
+    else:
+        model_adjustment = 0.0
+
     if abs(score) < 1.25:
         direction = "neutral"
         strategy = "Wait for confirmation"
@@ -220,8 +264,11 @@ def analyze_market(market: Market, frame: pd.DataFrame, interval: str, period: s
             "macd": round(float(latest.macd), 5),
             "macd_signal": round(float(latest.macd_signal), 5),
             "news_score": news.score if news else None,
+            "model_adjustment": round(model_adjustment, 4),
         },
+        features=feature_map,
         news=news,
+        model=model_signal,
         risk=risk,
         last_candle=Candle(
             time=timestamp.isoformat(),

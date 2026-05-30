@@ -6,6 +6,9 @@ class Market(BaseModel):
     symbol: str
     name: str
     category: str
+    session: str | None = None
+    is_open: bool | None = None
+    closed_reason: str | None = None
 
 
 class Candle(BaseModel):
@@ -45,6 +48,15 @@ class NewsSentiment(BaseModel):
     error: str | None = None
 
 
+class ModelSignal(BaseModel):
+    probability: float
+    adjustment: float
+    samples_seen: int
+    resolved_predictions: int
+    accuracy: float | None = None
+    bias: float
+
+
 class Signal(BaseModel):
     market: Market
     interval: str
@@ -57,6 +69,8 @@ class Signal(BaseModel):
     reasons: list[str]
     warnings: list[str]
     indicators: dict[str, float | str | None]
+    features: dict[str, float] | None = None
     news: NewsSentiment | None = None
+    model: ModelSignal | None = None
     risk: RiskPlan | None
     last_candle: Candle
