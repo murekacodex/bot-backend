@@ -62,6 +62,8 @@ class SessionSignal(BaseModel):
     current_session: str
     active_sessions: list[str]
     preferred_sessions: list[str]
+    next_session: str | None = None
+    next_session_start: str | None = None
     alignment: str
     suggestion: str
     score_adjustment: float

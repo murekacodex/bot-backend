@@ -206,7 +206,7 @@ def analyze_market(
     else:
         model_adjustment = 0.0
 
-    session_signal = recommend_session_entry(market, now=data.index[-1].to_pydatetime())
+    session_signal = recommend_session_entry(market)
     if settings.enable_session_suggestions:
         score += session_signal.score_adjustment
         if session_signal.alignment == "aligned":

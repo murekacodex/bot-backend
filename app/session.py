@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import get_settings
 from app.models import Market, SessionSignal
@@ -18,17 +19,58 @@ class SessionWindow:
 FOREX_SESSION = SessionWindow(open_day=6, open_time=time(22, 0), close_day=4, close_time=time(22, 0))
 CME_GLOBEX_SESSION = SessionWindow(open_day=6, open_time=time(23, 0), close_day=4, close_time=time(22, 0))
 
-SESSION_WINDOWS: dict[str, tuple[time, time]] = {
-    "asia": (time(0, 0), time(8, 0)),
-    "london": (time(7, 0), time(16, 0)),
-    "new_york": (time(13, 0), time(21, 0)),
-}
-
 SESSION_DISPLAY = {
     "asia": "Asia",
     "london": "London",
     "new_york": "New York",
 }
+
+
+def _session_timezone() -> ZoneInfo:
+    settings = get_settings()
+    try:
+        return ZoneInfo(settings.session_timezone)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def _parse_session_time(value: str, fallback: time) -> time:
+    try:
+        hour, minute = value.strip().split(":", maxsplit=1)
+        return time(int(hour), int(minute))
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+
+
+def session_windows() -> dict[str, tuple[time, time]]:
+    settings = get_settings()
+    return {
+        "asia": (
+            _parse_session_time(settings.asia_session_open, time(0, 0)),
+            _parse_session_time(settings.asia_session_close, time(8, 0)),
+        ),
+        "london": (
+            _parse_session_time(settings.london_session_open, time(7, 0)),
+            _parse_session_time(settings.london_session_close, time(16, 0)),
+        ),
+        "new_york": (
+            _parse_session_time(settings.new_york_session_open, time(13, 0)),
+            _parse_session_time(settings.new_york_session_close, time(21, 0)),
+        ),
+    }
+
+
+def _current_session_time(now: datetime | None = None) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(_session_timezone())
+
+
+def _time_in_range(current: time, open_time: time, close_time: time) -> bool:
+    if open_time <= close_time:
+        return open_time <= current < close_time
+    return current >= open_time or current < close_time
 
 
 def _in_weekly_session(now: datetime, window: SessionWindow) -> bool:
@@ -76,14 +118,11 @@ def attach_market_status(market: Market, now: datetime | None = None) -> Market:
 
 
 def active_currency_sessions(now: datetime | None = None) -> list[str]:
-    current = now or datetime.now(timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    current = current.astimezone(timezone.utc)
+    current = _current_session_time(now)
 
     active: list[str] = []
-    for session, (open_time, close_time) in SESSION_WINDOWS.items():
-        if open_time <= current.time() < close_time:
+    for session, (open_time, close_time) in session_windows().items():
+        if _time_in_range(current.time(), open_time, close_time):
             active.append(session)
     return active
 
@@ -120,12 +159,42 @@ def preferred_sessions_for_market(market: Market) -> list[str]:
     return ["london"]
 
 
+def _next_session_start(preferred: list[str], now: datetime | None = None) -> tuple[str | None, datetime | None]:
+    current = _current_session_time(now)
+    windows = session_windows()
+    candidates: list[tuple[str, datetime]] = []
+
+    for session in preferred:
+        if session not in windows:
+            continue
+        open_time, _ = windows[session]
+        candidate = current.replace(
+            hour=open_time.hour,
+            minute=open_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if candidate <= current:
+            candidate += timedelta(days=1)
+        candidates.append((session, candidate))
+
+    if not candidates:
+        return None, None
+    return min(candidates, key=lambda item: item[1])
+
+
+def _format_session_start(session_start: datetime) -> str:
+    label = session_start.strftime("%H:%M %Z").strip()
+    return label or session_start.isoformat()
+
+
 def recommend_session_entry(market: Market, now: datetime | None = None) -> SessionSignal:
     settings = get_settings()
     active = active_currency_sessions(now)
     preferred = preferred_sessions_for_market(market)
     active_matches = [session for session in active if session in preferred]
     current_session = session_label(active)
+    next_session, next_start = _next_session_start(preferred, now)
 
     if active_matches:
         alignment = "aligned"
@@ -136,15 +205,21 @@ def recommend_session_entry(market: Market, now: datetime | None = None) -> Sess
         reasons = [f"{display_session(match)} liquidity aligns with this setup"]
     elif active:
         alignment = "off_session"
-        next_session = preferred[0]
-        suggestion = f"Wait for {display_session(next_session)} for a cleaner entry."
+        session_name = next_session or preferred[0]
+        if next_start:
+            suggestion = f"Wait for {display_session(session_name)} at {_format_session_start(next_start)} for a cleaner entry."
+        else:
+            suggestion = f"Wait for {display_session(session_name)} for a cleaner entry."
         score_adjustment = -settings.session_offsession_penalty
         confidence = 55
-        reasons = [f"Current session is {display_session(current_session)}, but this market prefers {display_session(next_session)}"]
+        reasons = [f"Current session is {display_session(current_session)}, but this market prefers {display_session(session_name)}"]
     else:
         alignment = "quiet"
-        next_session = preferred[0]
-        suggestion = f"Market is in a quiet window; wait for {display_session(next_session)}."
+        session_name = next_session or preferred[0]
+        if next_start:
+            suggestion = f"Market is in a quiet window; wait for {display_session(session_name)} at {_format_session_start(next_start)}."
+        else:
+            suggestion = f"Market is in a quiet window; wait for {display_session(session_name)}."
         score_adjustment = -settings.session_offsession_penalty
         confidence = 50
         reasons = ["No major FX session is currently active"]
@@ -153,6 +228,8 @@ def recommend_session_entry(market: Market, now: datetime | None = None) -> Sess
         current_session=current_session,
         active_sessions=active,
         preferred_sessions=preferred,
+        next_session=next_session,
+        next_session_start=next_start.isoformat() if next_start else None,
         alignment=alignment,
         suggestion=suggestion,
         score_adjustment=round(score_adjustment, 4),

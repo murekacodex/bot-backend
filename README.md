@@ -49,6 +49,10 @@ Environment variables:
 - `FILTER_CLOSED_MARKETS`: skip closed markets from `/markets` and `/signals`.
 - `ENABLE_LEARNING`: turn on the adaptive model that updates from prior predictions.
 - `ENABLE_SESSION_SUGGESTIONS`: add Asia/London/New York entry timing hints to signals.
+- `SESSION_TIMEZONE`: timezone used for session suggestions, defaults to `Africa/Nairobi`.
+- `ASIA_SESSION_OPEN` / `ASIA_SESSION_CLOSE`: Asia session window in `SESSION_TIMEZONE`, defaults to `03:00`-`11:00`.
+- `LONDON_SESSION_OPEN` / `LONDON_SESSION_CLOSE`: London session window in `SESSION_TIMEZONE`, defaults to `10:00`-`19:00`.
+- `NEW_YORK_SESSION_OPEN` / `NEW_YORK_SESSION_CLOSE`: New York session window in `SESSION_TIMEZONE`, defaults to `16:00`-`00:00`.
 - `LEARNING_HORIZON_HOURS`: minimum age before a prediction can be scored.
 - `LEARNING_MIN_MOVE_PCT`: minimum realized move used to label a past prediction.
 - `LEARNING_RATE`: online update rate for the learner.
