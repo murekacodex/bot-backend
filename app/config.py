@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     session_alignment_boost: float = Field(default=0.4, alias="SESSION_ALIGNMENT_BOOST")
     session_offsession_penalty: float = Field(default=0.2, alias="SESSION_OFFSESSION_PENALTY")
     model_state_path: str = Field(default="data/model_state.json", alias="MODEL_STATE_PATH")
+    auth_state_path: str = Field(default="data/users.json", alias="AUTH_STATE_PATH")
+    auth_secret_key: str = Field(default="change-this-auth-secret", alias="AUTH_SECRET_KEY")
+    auth_token_ttl_hours: int = Field(default=24, alias="AUTH_TOKEN_TTL_HOURS")
 
     @property
     def cors_origin_list(self) -> list[str]:

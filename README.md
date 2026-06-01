@@ -59,3 +59,12 @@ Environment variables:
 - `SESSION_ALIGNMENT_BOOST`: score boost when the current session matches the market.
 - `SESSION_OFFSESSION_PENALTY`: score penalty when the current session is a poor fit.
 - `MODEL_STATE_PATH`: file path used to persist learner state.
+- `AUTH_STATE_PATH`: file path used to persist login users.
+- `AUTH_SECRET_KEY`: secret used to sign API tokens. Set a strong unique value in production.
+- `AUTH_TOKEN_TTL_HOURS`: login token lifetime.
+
+## Access Control
+
+The first successful `/auth/login` request creates the initial admin user when no users exist.
+After that, users must log in and send `Authorization: Bearer <token>` to access market data and signals.
+Admins can manage users with `/users`, `/users/{user_id}`, and can grant or revoke admin/access status.

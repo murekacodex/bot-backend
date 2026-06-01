@@ -58,6 +58,38 @@ class ModelSignal(BaseModel):
     bias: float
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class CreateUserRequest(LoginRequest):
+    is_admin: bool = False
+    is_active: bool = True
+
+
+class UpdateUserRequest(BaseModel):
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+    is_admin: bool | None = None
+    is_active: bool | None = None
+
+
+class UserPublic(BaseModel):
+    id: str
+    username: str
+    is_admin: bool
+    is_active: bool
+    created_at: str
+    updated_at: str
+    last_login_at: str | None = None
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserPublic
+    setup_admin: bool = False
+
+
 class SessionSignal(BaseModel):
     current_session: str
     active_sessions: list[str]

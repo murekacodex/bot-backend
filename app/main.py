@@ -1,12 +1,13 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import analyze_market
+from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
 from app.config import get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import dataframe_to_candles, fetch_candles
 from app.markets import MARKETS, get_market
-from app.models import Candle, Market, NewsSentiment, Signal
+from app.models import AuthResponse, Candle, CreateUserRequest, LoginRequest, Market, NewsSentiment, Signal, UpdateUserRequest, UserPublic
 from app.news import fetch_news_sentiment
 from app.session import attach_market_status
 
@@ -33,8 +34,45 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/auth/setup")
+def auth_setup() -> dict[str, bool]:
+    return {"needs_admin": not users_exist()}
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(payload: LoginRequest) -> AuthResponse:
+    token, user, setup_admin = login_or_create_admin(payload)
+    return AuthResponse(token=token, user=user, setup_admin=setup_admin)
+
+
+@app.get("/auth/me", response_model=UserPublic)
+def me(user: UserPublic = Depends(current_user)) -> UserPublic:
+    return user
+
+
+@app.get("/users", response_model=list[UserPublic])
+def users(_: UserPublic = Depends(admin_user)) -> list[UserPublic]:
+    return list_users()
+
+
+@app.post("/users", response_model=UserPublic)
+def add_user(payload: CreateUserRequest, _: UserPublic = Depends(admin_user)) -> UserPublic:
+    return create_user(payload)
+
+
+@app.patch("/users/{user_id}", response_model=UserPublic)
+def edit_user(user_id: str, payload: UpdateUserRequest, user: UserPublic = Depends(admin_user)) -> UserPublic:
+    return update_user(user_id, payload, acting_user=user)
+
+
+@app.delete("/users/{user_id}", status_code=204)
+def remove_user(user_id: str, user: UserPublic = Depends(admin_user)) -> Response:
+    delete_user(user_id, acting_user=user)
+    return Response(status_code=204)
+
+
 @app.get("/markets", response_model=list[Market])
-def markets(include_closed: bool = Query(default=False)) -> list[Market]:
+def markets(include_closed: bool = Query(default=False), _: UserPublic = Depends(current_user)) -> list[Market]:
     markets = [attach_market_status(market) for market in MARKETS.values()]
     if settings.filter_closed_markets and not include_closed:
         return [market for market in markets if market.is_open]
@@ -46,6 +84,7 @@ def candles(
     code: str,
     interval: str = Query(default=settings.default_interval),
     period: str = Query(default=settings.default_period),
+    _: UserPublic = Depends(current_user),
 ) -> list[Candle]:
     try:
         market = get_market(code)
@@ -58,7 +97,7 @@ def candles(
 
 
 @app.get("/news/{code}", response_model=NewsSentiment)
-def news(code: str) -> NewsSentiment:
+def news(code: str, _: UserPublic = Depends(current_user)) -> NewsSentiment:
     try:
         market = get_market(code)
         return fetch_news_sentiment(market)
@@ -74,6 +113,7 @@ def signals(
     period: str = Query(default=settings.default_period),
     include_news: bool = Query(default=settings.enable_news_analysis),
     include_closed: bool = Query(default=False),
+    _: UserPublic = Depends(current_user),
 ) -> list[Signal]:
     output: list[Signal] = []
     errors: list[str] = []
@@ -98,6 +138,7 @@ def signal(
     interval: str = Query(default=settings.default_interval),
     period: str = Query(default=settings.default_period),
     include_news: bool = Query(default=settings.enable_news_analysis),
+    _: UserPublic = Depends(current_user),
 ) -> Signal:
     try:
         market = get_market(code)
