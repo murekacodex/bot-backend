@@ -138,6 +138,7 @@ def timeframe_contexts(market: Market, interval: str) -> tuple[dict, list[str]]:
 def signals(
     interval: str = Query(default=settings.default_interval),
     period: str = Query(default=settings.default_period),
+    category: str | None = Query(default=None, pattern="^(forex|metal)$"),
     include_news: bool = Query(default=settings.enable_news_analysis),
     include_closed: bool = Query(default=False),
     _: UserPublic = Depends(current_user),
@@ -146,6 +147,8 @@ def signals(
     errors: list[str] = []
 
     for market in markets(include_closed=include_closed):
+        if category and market.category != category:
+            continue
         try:
             frame = fetch_candles(market, interval=interval, period=period)
             market_news = fetch_news_sentiment(market) if include_news else None
