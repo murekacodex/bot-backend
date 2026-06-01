@@ -74,6 +74,22 @@ MARKETS: dict[str, Market] = {
         session="cme_globex",
         preferred_sessions=["london", "new_york"],
     ),
+    "XAGUSD": Market(
+        code="XAGUSD",
+        symbol="SI=F",
+        name="Silver Futures / US Dollar",
+        category="metal",
+        session="cme_globex",
+        preferred_sessions=["london", "new_york"],
+    ),
+    "XPTUSD": Market(
+        code="XPTUSD",
+        symbol="PL=F",
+        name="Platinum Futures / US Dollar",
+        category="metal",
+        session="cme_globex",
+        preferred_sessions=["london", "new_york"],
+    ),
 }
 
 

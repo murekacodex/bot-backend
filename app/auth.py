@@ -40,12 +40,26 @@ def _read_state() -> dict[str, list[dict[str, Any]]]:
     except (OSError, json.JSONDecodeError):
         return {"users": []}
     users = state.get("users")
-    return {"users": users if isinstance(users, list) else []}
+    normalized_state = {"users": users if isinstance(users, list) else []}
+    _coerce_single_admin(normalized_state)
+    return normalized_state
+
+
+def _coerce_single_admin(state: dict[str, list[dict[str, Any]]]) -> None:
+    admin_seen = False
+    for user in state["users"]:
+        if not user.get("is_admin"):
+            continue
+        if admin_seen:
+            user["is_admin"] = False
+        else:
+            admin_seen = True
 
 
 def _write_state(state: dict[str, list[dict[str, Any]]]) -> None:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    _coerce_single_admin(state)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     with temporary.open("w", encoding="utf-8") as file:
         json.dump(state, file, indent=2, sort_keys=True)
@@ -203,7 +217,7 @@ def create_user(payload: CreateUserRequest) -> UserPublic:
             "id": str(uuid4()),
             "username": username,
             "password_hash": _hash_password(payload.password),
-            "is_admin": payload.is_admin,
+            "is_admin": False,
             "is_active": payload.is_active,
             "created_at": timestamp,
             "updated_at": timestamp,
@@ -221,22 +235,15 @@ def update_user(user_id: str, payload: UpdateUserRequest, acting_user: UserPubli
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        next_is_admin = user.get("is_admin", False) if payload.is_admin is None else payload.is_admin
         next_is_active = user.get("is_active", True) if payload.is_active is None else payload.is_active
-        active_admins = [
-            item
-            for item in state["users"]
-            if item.get("id") != user_id and item.get("is_admin") and item.get("is_active", True)
-        ]
-        if user.get("id") == acting_user.id and (not next_is_admin or not next_is_active):
+
+        if payload.is_admin is not None and payload.is_admin != bool(user.get("is_admin")):
+            raise HTTPException(status_code=400, detail="Only the initial admin account can be an admin")
+        if user.get("id") == acting_user.id and not next_is_active:
             raise HTTPException(status_code=400, detail="Admins cannot remove their own access")
-        if user.get("is_admin") and user.get("is_active", True) and (not next_is_admin or not next_is_active) and not active_admins:
-            raise HTTPException(status_code=400, detail="At least one active admin is required")
 
         if payload.password:
             user["password_hash"] = _hash_password(payload.password)
-        if payload.is_admin is not None:
-            user["is_admin"] = payload.is_admin
         if payload.is_active is not None:
             user["is_active"] = payload.is_active
         user["updated_at"] = _now().isoformat()
@@ -252,12 +259,5 @@ def delete_user(user_id: str, acting_user: UserPublic) -> None:
             raise HTTPException(status_code=404, detail="User not found")
         if user.get("id") == acting_user.id:
             raise HTTPException(status_code=400, detail="Admins cannot delete themselves")
-        remaining_admins = [
-            item
-            for item in state["users"]
-            if item.get("id") != user_id and item.get("is_admin") and item.get("is_active", True)
-        ]
-        if user.get("is_admin") and user.get("is_active", True) and not remaining_admins:
-            raise HTTPException(status_code=400, detail="At least one active admin is required")
         state["users"] = [item for item in state["users"] if item.get("id") != user_id]
         _write_state(state)

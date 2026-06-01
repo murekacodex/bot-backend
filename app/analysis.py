@@ -6,7 +6,7 @@ import pandas as pd
 
 from app.learning import AdaptiveSignalModel, aggregate_features
 from app.config import get_settings
-from app.models import Candle, Market, NewsSentiment, RiskPlan, Signal
+from app.models import Candle, Market, NewsSentiment, RiskPlan, Signal, TimeframeContext
 from app.session import recommend_session_entry
 
 
@@ -88,6 +88,71 @@ def _news_score(news: NewsSentiment | None) -> float:
     return max(-1.5, min(1.5, news.score * 0.75))
 
 
+def _prepared_indicators(frame: pd.DataFrame) -> pd.DataFrame:
+    data = frame.copy()
+    data["ema_9"] = data["close"].ewm(span=9, adjust=False).mean()
+    data["ema_21"] = data["close"].ewm(span=21, adjust=False).mean()
+    data["sma_50"] = data["close"].rolling(50).mean()
+    data["rsi"] = _rsi(data["close"])
+    data["atr"] = _atr(data)
+    data["macd"] = data["close"].ewm(span=12, adjust=False).mean() - data["close"].ewm(span=26, adjust=False).mean()
+    data["macd_signal"] = data["macd"].ewm(span=9, adjust=False).mean()
+    return data
+
+
+def summarize_timeframe(frame: pd.DataFrame, interval: str, period: str) -> TimeframeContext:
+    if len(frame) < 30:
+        raise ValueError("At least 30 candles are needed for timeframe context")
+
+    data = _prepared_indicators(frame)
+    latest = data.iloc[-1]
+    close = float(latest.close)
+    ema_9 = float(latest.ema_9)
+    ema_21 = float(latest.ema_21)
+    macd_delta = float(latest.macd - latest.macd_signal)
+    score = 0.0
+
+    if ema_9 > ema_21:
+        score += 1.0
+    else:
+        score -= 1.0
+
+    if pd.notna(latest.sma_50):
+        score += 0.5 if latest.close > latest.sma_50 else -0.5
+
+    if macd_delta > 0:
+        score += 0.5
+    else:
+        score -= 0.5
+
+    if pd.notna(latest.rsi):
+        if latest.rsi < 30:
+            score += 0.35
+        elif latest.rsi > 70:
+            score -= 0.35
+
+    if abs(score) < 0.75:
+        direction = "neutral"
+    elif score > 0:
+        direction = "bullish"
+    else:
+        direction = "bearish"
+
+    summary = f"{interval} context is {direction}: EMA 9 {'above' if ema_9 > ema_21 else 'below'} EMA 21"
+    return TimeframeContext(
+        interval=interval,
+        period=period,
+        direction=direction,
+        score=round(score, 2),
+        close=round(close, 5),
+        ema_9=round(ema_9, 5),
+        ema_21=round(ema_21, 5),
+        rsi=round(float(latest.rsi), 2) if pd.notna(latest.rsi) else None,
+        macd_delta=round(macd_delta, 5),
+        summary=summary,
+    )
+
+
 def _build_feature_map(latest: pd.Series, news: NewsSentiment | None, pattern_score: float, score: float) -> dict[str, float]:
     close = float(latest.close)
     ema_9 = float(latest.ema_9)
@@ -122,19 +187,13 @@ def analyze_market(
     period: str,
     news: NewsSentiment | None = None,
     learner: AdaptiveSignalModel | None = None,
+    timeframes: dict[str, TimeframeContext] | None = None,
 ) -> Signal:
     settings = get_settings()
     if len(frame) < 30:
         raise ValueError("At least 30 candles are needed for signal analysis")
 
-    data = frame.copy()
-    data["ema_9"] = data["close"].ewm(span=9, adjust=False).mean()
-    data["ema_21"] = data["close"].ewm(span=21, adjust=False).mean()
-    data["sma_50"] = data["close"].rolling(50).mean()
-    data["rsi"] = _rsi(data["close"])
-    data["atr"] = _atr(data)
-    data["macd"] = data["close"].ewm(span=12, adjust=False).mean() - data["close"].ewm(span=26, adjust=False).mean()
-    data["macd_signal"] = data["macd"].ewm(span=9, adjust=False).mean()
+    data = _prepared_indicators(frame)
 
     latest = data.iloc[-1]
     previous = data.iloc[-2]
@@ -184,6 +243,22 @@ def analyze_market(
 
     if patterns:
         reasons.extend(patterns)
+
+    timeframe_context = timeframes or {}
+    higher_context = timeframe_context.get("higher")
+    lower_context = timeframe_context.get("lower")
+    if higher_context:
+        if higher_context.direction == "bullish":
+            score += 0.85
+        elif higher_context.direction == "bearish":
+            score -= 0.85
+        reasons.append(f"Higher timeframe {higher_context.interval}: {higher_context.direction} bias")
+    if lower_context:
+        if lower_context.direction == "bullish":
+            score += 0.45
+        elif lower_context.direction == "bearish":
+            score -= 0.45
+        reasons.append(f"Lower timeframe {lower_context.interval}: {lower_context.direction} timing")
 
     news_adjustment = _news_score(news)
     if news_adjustment:
@@ -276,7 +351,10 @@ def analyze_market(
             "macd_signal": round(float(latest.macd_signal), 5),
             "news_score": news.score if news else None,
             "model_adjustment": round(model_adjustment, 4),
+            "higher_timeframe": higher_context.direction if higher_context else None,
+            "lower_timeframe": lower_context.direction if lower_context else None,
         },
+        timeframes=timeframe_context,
         features=feature_map,
         news=news,
         model=model_signal,

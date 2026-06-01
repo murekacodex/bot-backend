@@ -29,6 +29,19 @@ class RiskPlan(BaseModel):
     risk_reward: float
 
 
+class TimeframeContext(BaseModel):
+    interval: str
+    period: str
+    direction: str
+    score: float
+    close: float
+    ema_9: float
+    ema_21: float
+    rsi: float | None = None
+    macd_delta: float
+    summary: str
+
+
 class NewsItem(BaseModel):
     title: str
     publisher: str | None = None
@@ -115,6 +128,7 @@ class Signal(BaseModel):
     reasons: list[str]
     warnings: list[str]
     indicators: dict[str, float | str | None]
+    timeframes: dict[str, TimeframeContext] = Field(default_factory=dict)
     features: dict[str, float] | None = None
     news: NewsSentiment | None = None
     model: ModelSignal | None = None

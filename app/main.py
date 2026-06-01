@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.analysis import analyze_market
+from app.analysis import analyze_market, summarize_timeframe
 from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
 from app.config import get_settings
 from app.learning import AdaptiveSignalModel
@@ -107,6 +107,33 @@ def news(code: str, _: UserPublic = Depends(current_user)) -> NewsSentiment:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+TIMEFRAME_MAP = {
+    "5m": {"lower": None, "higher": ("15m", "1d")},
+    "15m": {"lower": ("5m", "1d"), "higher": ("1h", "5d")},
+    "30m": {"lower": ("15m", "1d"), "higher": ("1h", "5d")},
+    "1h": {"lower": ("15m", "1d"), "higher": ("1d", "3mo")},
+    "4h": {"lower": ("1h", "5d"), "higher": ("1d", "3mo")},
+    "1d": {"lower": ("1h", "5d"), "higher": ("1wk", "1y")},
+}
+
+
+def timeframe_contexts(market: Market, interval: str) -> tuple[dict, list[str]]:
+    contexts = {}
+    warnings = []
+    selected = TIMEFRAME_MAP.get(interval, TIMEFRAME_MAP["1h"])
+    for label in ("higher", "lower"):
+        selection = selected.get(label)
+        if not selection:
+            continue
+        selected_interval, selected_period = selection
+        try:
+            frame = fetch_candles(market, interval=selected_interval, period=selected_period)
+            contexts[label] = summarize_timeframe(frame, interval=selected_interval, period=selected_period)
+        except Exception as exc:
+            warnings.append(f"{label.title()} timeframe {selected_interval} unavailable: {exc}")
+    return contexts, warnings
+
+
 @app.get("/signals", response_model=list[Signal])
 def signals(
     interval: str = Query(default=settings.default_interval),
@@ -122,7 +149,18 @@ def signals(
         try:
             frame = fetch_candles(market, interval=interval, period=period)
             market_news = fetch_news_sentiment(market) if include_news else None
-            output.append(analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner))
+            contexts, timeframe_warnings = timeframe_contexts(market, interval)
+            signal = analyze_market(
+                market,
+                frame,
+                interval=interval,
+                period=period,
+                news=market_news,
+                learner=learner,
+                timeframes=contexts,
+            )
+            signal.warnings.extend(timeframe_warnings)
+            output.append(signal)
         except Exception as exc:  # Keep one bad data source from hiding other signals.
             errors.append(f"{market.code}: {exc}")
 
@@ -147,7 +185,10 @@ def signal(
             raise HTTPException(status_code=409, detail=market.closed_reason or "Market is closed")
         frame = fetch_candles(market, interval=interval, period=period)
         market_news = fetch_news_sentiment(market) if include_news else None
-        return analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner)
+        contexts, timeframe_warnings = timeframe_contexts(market, interval)
+        result = analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner, timeframes=contexts)
+        result.warnings.extend(timeframe_warnings)
+        return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

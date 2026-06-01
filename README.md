@@ -67,4 +67,4 @@ Environment variables:
 
 The first successful `/auth/login` request creates the initial admin user when no users exist.
 After that, users must log in and send `Authorization: Bearer <token>` to access market data and signals.
-Admins can manage users with `/users`, `/users/{user_id}`, and can grant or revoke admin/access status.
+Only the initial admin account can be an admin. Admins can manage normal users with `/users` and `/users/{user_id}`, including enabling or disabling access.
