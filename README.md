@@ -62,6 +62,8 @@ Environment variables:
 - `AUTH_STATE_PATH`: file path used to persist login users.
 - `AUTH_SECRET_KEY`: secret used to sign API tokens. Set a strong unique value in production.
 - `AUTH_TOKEN_TTL_HOURS`: login token lifetime.
+- `RISK_ACCOUNT_BALANCE`: account balance used for suggested lot-size calculations.
+- `RISK_PERCENT`: account percentage to risk per signal.
 
 ## Access Control
 

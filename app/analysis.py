@@ -88,6 +88,30 @@ def _news_score(news: NewsSentiment | None) -> float:
     return max(-1.5, min(1.5, news.score * 0.75))
 
 
+def _contract_units(market: Market) -> float:
+    if market.code == "XAUUSD":
+        return 100.0
+    if market.code == "XAGUSD":
+        return 5000.0
+    if market.code == "XPTUSD":
+        return 50.0
+    return 100_000.0
+
+
+def _suggested_lot_size(market: Market, entry: float, stop_loss: float, risk_amount: float) -> float:
+    price_risk = abs(entry - stop_loss)
+    if price_risk <= 0 or risk_amount <= 0:
+        return 0.0
+
+    units = _contract_units(market)
+    quote_currency = market.code[-3:]
+    quote_conversion = entry if market.category == "forex" and quote_currency != "USD" else 1.0
+    per_lot_risk = (price_risk * units) / max(quote_conversion, 1e-12)
+    if per_lot_risk <= 0:
+        return 0.0
+    return round(max(risk_amount / per_lot_risk, 0.01), 2)
+
+
 def _prepared_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     data = frame.copy()
     data["ema_9"] = data["close"].ewm(span=9, adjust=False).mean()
@@ -317,12 +341,17 @@ def analyze_market(
             stop_loss = close + stop_distance
             take_profit_1 = close - target_distance
             take_profit_2 = close - target_distance * 1.6
+        risk_percent = max(settings.risk_percent, 0.0)
+        risk_amount = max(settings.risk_account_balance, 0.0) * risk_percent / 100.0
         risk = RiskPlan(
             entry=round(close, 5),
             stop_loss=round(stop_loss, 5),
             take_profit_1=round(take_profit_1, 5),
             take_profit_2=round(take_profit_2, 5),
             risk_reward=1.5,
+            risk_percent=round(risk_percent, 2),
+            risk_amount=round(risk_amount, 2),
+            suggested_lot_size=_suggested_lot_size(market, close, stop_loss, risk_amount),
         )
 
     timestamp = data.index[-1]

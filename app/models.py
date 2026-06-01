@@ -27,6 +27,9 @@ class RiskPlan(BaseModel):
     take_profit_1: float
     take_profit_2: float
     risk_reward: float
+    risk_percent: float
+    risk_amount: float
+    suggested_lot_size: float
 
 
 class TimeframeContext(BaseModel):

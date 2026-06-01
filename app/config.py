@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     auth_state_path: str = Field(default="data/users.json", alias="AUTH_STATE_PATH")
     auth_secret_key: str = Field(default="change-this-auth-secret", alias="AUTH_SECRET_KEY")
     auth_token_ttl_hours: int = Field(default=24, alias="AUTH_TOKEN_TTL_HOURS")
+    risk_account_balance: float = Field(default=1000.0, alias="RISK_ACCOUNT_BALANCE")
+    risk_percent: float = Field(default=1.0, alias="RISK_PERCENT")
 
     @property
     def cors_origin_list(self) -> list[str]:
