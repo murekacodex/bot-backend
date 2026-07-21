@@ -32,6 +32,48 @@ class RiskPlan(BaseModel):
     suggested_lot_size: float
 
 
+class SignalOutcome(BaseModel):
+    status: str
+    resolved_at: str | None = None
+    actual_price: float | None = None
+    move_pct: float | None = None
+    label: str | None = None
+    success: bool | None = None
+    reason: str | None = None
+
+
+class SignalLogEntry(BaseModel):
+    id: str
+    source: str
+    generated_at: str
+    candle_time: str
+    market_code: str
+    market_name: str
+    category: str
+    interval: str
+    period: str
+    direction: str
+    confidence: int
+    score: float
+    strategy: str
+    entry_price: float
+    risk: RiskPlan | None = None
+    features: dict[str, float] | None = None
+    reasons: list[str]
+    warnings: list[str]
+    outcome: SignalOutcome
+
+
+class SignalOutcomeStats(BaseModel):
+    total: int
+    pending: int
+    resolved: int
+    successes: int
+    failures: int
+    accuracy: float | None = None
+    by_market: dict[str, dict[str, int | float | None]]
+
+
 class TimeframeContext(BaseModel):
     interval: str
     period: str

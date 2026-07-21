@@ -9,6 +9,7 @@ from app.market_data import fetch_candles
 from app.markets import MARKETS
 from app.news import fetch_news_sentiment
 from app.session import attach_market_status
+from app.signal_journal import record_signal, resolve_signal_outcomes
 
 
 learner = AdaptiveSignalModel()
@@ -46,7 +47,9 @@ def run_once() -> list[dict]:
             period=settings.default_period,
             timestamp=current_time,
         )
+        record_signal(signal, source="worker")
         signals.append(signal.model_dump())
+    resolve_signal_outcomes()
     return signals
 
 

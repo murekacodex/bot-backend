@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     auth_token_ttl_hours: int = Field(default=24, alias="AUTH_TOKEN_TTL_HOURS")
     risk_account_balance: float = Field(default=1000.0, alias="RISK_ACCOUNT_BALANCE")
     risk_percent: float = Field(default=1.0, alias="RISK_PERCENT")
+    signal_log_path: str = Field(default="data/signal_log.json", alias="SIGNAL_LOG_PATH")
+    signal_outcome_horizon_hours: int = Field(default=24, alias="SIGNAL_OUTCOME_HORIZON_HOURS")
+    signal_outcome_min_move_pct: float = Field(default=0.0015, alias="SIGNAL_OUTCOME_MIN_MOVE_PCT")
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -7,9 +7,10 @@ from app.config import get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import dataframe_to_candles, fetch_candles
 from app.markets import MARKETS, get_market
-from app.models import AuthResponse, Candle, CreateUserRequest, LoginRequest, Market, NewsSentiment, Signal, UpdateUserRequest, UserPublic
+from app.models import AuthResponse, Candle, CreateUserRequest, LoginRequest, Market, NewsSentiment, Signal, SignalLogEntry, SignalOutcomeStats, UpdateUserRequest, UserPublic
 from app.news import fetch_news_sentiment
 from app.session import attach_market_status
+from app.signal_journal import list_signal_log, record_signal, record_signals, resolve_signal_outcomes, signal_outcome_stats
 
 settings = get_settings()
 learner = AdaptiveSignalModel()
@@ -170,7 +171,31 @@ def signals(
     if not output:
         raise HTTPException(status_code=502, detail={"message": "No signals could be generated", "errors": errors})
 
-    return sorted(output, key=lambda signal: signal.confidence, reverse=True)
+    sorted_output = sorted(output, key=lambda signal: signal.confidence, reverse=True)
+    record_signals(sorted_output, source="api_bulk")
+    return sorted_output
+
+
+@app.get("/signal-log", response_model=list[SignalLogEntry])
+def signal_log(
+    market: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    include_pending: bool = Query(default=True),
+    _: UserPublic = Depends(current_user),
+) -> list[SignalLogEntry]:
+    return list_signal_log(market_code=market, limit=limit, include_pending=include_pending)
+
+
+@app.post("/signal-log/resolve", response_model=SignalOutcomeStats)
+def resolve_signal_log(_: UserPublic = Depends(admin_user)) -> SignalOutcomeStats:
+    resolve_signal_outcomes()
+    return signal_outcome_stats()
+
+
+@app.get("/signal-log/stats", response_model=SignalOutcomeStats)
+def signal_log_stats(_: UserPublic = Depends(current_user)) -> SignalOutcomeStats:
+    resolve_signal_outcomes()
+    return signal_outcome_stats()
 
 
 @app.get("/signals/{code}", response_model=Signal)
@@ -191,6 +216,7 @@ def signal(
         contexts, timeframe_warnings = timeframe_contexts(market, interval)
         result = analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner, timeframes=contexts)
         result.warnings.extend(timeframe_warnings)
+        record_signal(result, source="api_single")
         return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

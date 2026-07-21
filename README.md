@@ -64,9 +64,23 @@ Environment variables:
 - `AUTH_TOKEN_TTL_HOURS`: login token lifetime.
 - `RISK_ACCOUNT_BALANCE`: account balance used for suggested lot-size calculations.
 - `RISK_PERCENT`: account percentage to risk per signal.
+- `SIGNAL_LOG_PATH`: file path used to persist generated signal history and outcomes.
+- `SIGNAL_OUTCOME_HORIZON_HOURS`: minimum age before a logged signal can be scored.
+- `SIGNAL_OUTCOME_MIN_MOVE_PCT`: minimum realized move used to decide if a signal succeeded.
 
 ## Access Control
 
 The first successful `/auth/login` request creates the initial admin user when no users exist.
 After that, users must log in and send `Authorization: Bearer <token>` to access market data and signals.
 Only the initial admin account can be an admin. Admins can manage normal users with `/users` and `/users/{user_id}`, including enabling or disabling access.
+
+## Signal Journal
+
+Generated API and worker signals are persisted to `SIGNAL_LOG_PATH`.
+Repeated refreshes are de-duplicated by source, market, interval, period, and candle timestamp.
+
+Useful endpoints:
+
+- `GET /signal-log`: latest logged signals, including pending and resolved outcomes.
+- `GET /signal-log/stats`: aggregate outcome accuracy by market.
+- `POST /signal-log/resolve`: admin-only endpoint to resolve eligible pending outcomes immediately.
