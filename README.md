@@ -13,26 +13,21 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000/docs`.
 
-## Heroku
+## AWS deployment
 
-This folder contains the Heroku files:
+The repository root contains a Docker Compose deployment for a dedicated AWS
+Lightsail instance. It runs the API, learner worker, and frontend together. The
+`bot-data` volume keeps authentication, model, and journal state across container
+restarts, and state writes use inter-process locks.
 
-- `Procfile`
-- `requirements.txt`
-- `.python-version`
+Copy `.env.production.example` to `.env.production`, generate a unique
+`AUTH_SECRET_KEY`, set the public origin, then run:
 
-Deploy from inside `backend/` or use `git subtree push --prefix backend heroku main`.
-
-Run both process types in Heroku:
-
-- `web` serves the API.
-- `worker` updates the learner from past predictions.
-
-Set CORS for your deployed React app:
-
-```bash
-heroku config:set CORS_ORIGINS=https://your-react-app-domain.com
+```console
+docker compose up -d --build
 ```
+
+Production startup fails if the default authentication secret is still present.
 
 ## Configuration
 
@@ -61,6 +56,8 @@ Environment variables:
 - `MODEL_STATE_PATH`: file path used to persist learner state.
 - `AUTH_STATE_PATH`: file path used to persist login users.
 - `AUTH_SECRET_KEY`: secret used to sign API tokens. Set a strong unique value in production.
+- `ENVIRONMENT`: set to `production` in deployed environments.
+- `ACCOUNT_CURRENCY`: account currency used for safe lot-size conversion, currently `USD`.
 - `AUTH_TOKEN_TTL_HOURS`: login token lifetime.
 - `RISK_ACCOUNT_BALANCE`: account balance used for suggested lot-size calculations.
 - `RISK_PERCENT`: account percentage to risk per signal.

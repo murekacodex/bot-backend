@@ -98,16 +98,30 @@ def market_is_open(market: Market, now: datetime | None = None) -> tuple[bool, s
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     current = current.astimezone(timezone.utc)
+    new_york = current.astimezone(ZoneInfo("America/New_York"))
+    weekday = new_york.weekday()
+    local_time = new_york.time()
 
     if market.session == "forex":
-        if _in_weekly_session(current, FOREX_SESSION):
+        is_open = (
+            (weekday == 6 and local_time >= time(17, 0))
+            or weekday in {0, 1, 2, 3}
+            or (weekday == 4 and local_time < time(17, 0))
+        )
+        if is_open:
             return True, None
         return False, "Forex markets are closed for the weekend"
 
     if market.session == "cme_globex":
-        if _in_weekly_session(current, CME_GLOBEX_SESSION):
+        weekly_open = (
+            (weekday == 6 and local_time >= time(18, 0))
+            or weekday in {0, 1, 2, 3}
+            or (weekday == 4 and local_time < time(17, 0))
+        )
+        maintenance_break = weekday in {0, 1, 2, 3} and time(17, 0) <= local_time < time(18, 0)
+        if weekly_open and not maintenance_break:
             return True, None
-        return False, "Gold futures are outside the Globex session"
+        return False, "Metals futures are outside the Globex session or in the daily maintenance break"
 
     return True, None
 

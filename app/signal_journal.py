@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
+
 from app.config import get_settings
 from app.market_data import fetch_candles
 from app.markets import get_market
 from app.models import Signal, SignalLogEntry, SignalOutcome, SignalOutcomeStats
+from app.persistence import atomic_write_json, file_lock
 
 
 _lock = threading.Lock()
@@ -51,10 +54,7 @@ def _read_state() -> dict[str, list[dict[str, Any]]]:
 def _write_state(state: dict[str, list[dict[str, Any]]]) -> None:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(state, file, indent=2, sort_keys=True)
-    temporary.replace(path)
+    atomic_write_json(path, state)
 
 
 def _entry_key(entry: dict[str, Any]) -> tuple[str, str, str, str, str]:
@@ -94,7 +94,7 @@ def _signal_to_entry(signal: Signal, source: str) -> SignalLogEntry:
 def record_signal(signal: Signal, source: str) -> SignalLogEntry:
     entry = _signal_to_entry(signal, source)
     entry_payload = entry.model_dump()
-    with _lock:
+    with _lock, file_lock(_state_path()):
         state = _read_state()
         key = _entry_key(entry_payload)
         for existing in state["signals"]:
@@ -111,7 +111,7 @@ def record_signals(signals: list[Signal], source: str) -> list[SignalLogEntry]:
 
 def list_signal_log(market_code: str | None = None, limit: int = 100, include_pending: bool = True) -> list[SignalLogEntry]:
     normalized_market = market_code.upper().replace("/", "") if market_code else None
-    with _lock:
+    with _lock, file_lock(_state_path()):
         entries = list(_read_state()["signals"])
     if normalized_market:
         entries = [entry for entry in entries if entry.get("market_code") == normalized_market]
@@ -128,16 +128,21 @@ def _resolve_entry(entry: dict[str, Any], now: datetime) -> bool:
 
     settings = get_settings()
     try:
-        generated_at = _parse_time(str(entry["generated_at"]))
+        signal_time = _parse_time(str(entry.get("candle_time") or entry["generated_at"]))
     except (KeyError, ValueError):
-        generated_at = now
+        signal_time = now
     horizon = timedelta(hours=settings.signal_outcome_horizon_hours)
-    if now - generated_at < horizon:
+    target_time = signal_time + horizon
+    if now < target_time:
         return False
 
     market = get_market(str(entry["market_code"]))
     frame = fetch_candles(market, interval=str(entry["interval"]), period=str(entry["period"]))
-    actual_price = float(frame.iloc[-1]["close"])
+    timestamps = pd.to_datetime(frame.index, utc=True)
+    eligible = frame.loc[timestamps >= target_time]
+    if eligible.empty:
+        raise ValueError(f"No candle is available at the {settings.signal_outcome_horizon_hours}h outcome horizon")
+    actual_price = float(eligible.iloc[0]["close"])
     entry_price = float(entry["entry_price"])
     move = (actual_price - entry_price) / max(entry_price, 1e-12)
     threshold = float(settings.signal_outcome_min_move_pct)
@@ -164,7 +169,7 @@ def _resolve_entry(entry: dict[str, Any], now: datetime) -> bool:
         move_pct=round(move * 100, 4),
         label=label,
         success=success,
-        reason=f"Resolved after {settings.signal_outcome_horizon_hours}h horizon",
+        reason=f"Resolved at the first candle on or after the {settings.signal_outcome_horizon_hours}h horizon",
     ).model_dump()
     return True
 
@@ -172,7 +177,7 @@ def _resolve_entry(entry: dict[str, Any], now: datetime) -> bool:
 def resolve_signal_outcomes() -> int:
     current = _now()
     updated = 0
-    with _lock:
+    with _lock, file_lock(_state_path()):
         state = _read_state()
         for entry in state["signals"]:
             try:
@@ -180,13 +185,16 @@ def resolve_signal_outcomes() -> int:
                     updated += 1
             except Exception as exc:
                 entry["outcome"] = SignalOutcome(status="pending", reason=f"Resolution failed: {exc}").model_dump()
-        if updated:
+        if updated or any(
+            str(entry.get("outcome", {}).get("reason") or "").startswith("Resolution failed:")
+            for entry in state["signals"]
+        ):
             _write_state(state)
     return updated
 
 
 def signal_outcome_stats() -> SignalOutcomeStats:
-    with _lock:
+    with _lock, file_lock(_state_path()):
         entries = list(_read_state()["signals"])
 
     total = len(entries)

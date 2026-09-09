@@ -21,34 +21,37 @@ def run_once() -> list[dict]:
     for market in [attach_market_status(market) for market in MARKETS.values()]:
         if settings.filter_closed_markets and not market.is_open:
             continue
-        frame = fetch_candles(market, interval=settings.default_interval, period=settings.default_period)
-        current_close = float(frame.iloc[-1]["close"])
-        current_time = frame.index[-1].to_pydatetime()
-        if current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=timezone.utc)
-        else:
-            current_time = current_time.astimezone(timezone.utc)
-        market_news = fetch_news_sentiment(market) if settings.enable_news_analysis else None
-        learner.update_from_price(market.code, current_close, now=current_time)
-        signal = analyze_market(
-            market,
-            frame,
-            interval=settings.default_interval,
-            period=settings.default_period,
-            news=market_news,
-            learner=learner,
-        )
-        learner.register_prediction(
-            market_code=market.code,
-            direction=signal.direction,
-            entry_price=signal.last_candle.close,
-            features=signal.features or {},
-            interval=settings.default_interval,
-            period=settings.default_period,
-            timestamp=current_time,
-        )
-        record_signal(signal, source="worker")
-        signals.append(signal.model_dump())
+        try:
+            frame = fetch_candles(market, interval=settings.default_interval, period=settings.default_period)
+            current_close = float(frame.iloc[-1]["close"])
+            current_time = frame.index[-1].to_pydatetime()
+            if current_time.tzinfo is None:
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            else:
+                current_time = current_time.astimezone(timezone.utc)
+            market_news = fetch_news_sentiment(market) if settings.enable_news_analysis else None
+            learner.update_from_price(market.code, current_close, now=current_time)
+            signal = analyze_market(
+                market,
+                frame,
+                interval=settings.default_interval,
+                period=settings.default_period,
+                news=market_news,
+                learner=learner,
+            )
+            learner.register_prediction(
+                market_code=market.code,
+                direction=signal.direction,
+                entry_price=signal.last_candle.close,
+                features=signal.features or {},
+                interval=settings.default_interval,
+                period=settings.default_period,
+                timestamp=current_time,
+            )
+            record_signal(signal, source="worker")
+            signals.append(signal.model_dump())
+        except Exception as exc:
+            signals.append({"market": market.code, "error": str(exc)})
     resolve_signal_outcomes()
     return signals
 
@@ -57,7 +60,9 @@ def main() -> None:
     settings = get_settings()
     while True:
         try:
-            print(json.dumps(run_once(), default=str), flush=True)
+            results = run_once()
+            errors = [result for result in results if "error" in result]
+            print(json.dumps({"generated": len(results) - len(errors), "errors": errors}), flush=True)
         except Exception as exc:
             print(json.dumps({"error": str(exc)}), flush=True)
         time.sleep(settings.bot_poll_seconds)

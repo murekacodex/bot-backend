@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.models import ModelSignal
+from app.persistence import atomic_write_json
 
 
 def _sigmoid(value: float) -> float:
@@ -49,7 +50,7 @@ class AdaptiveSignalModel:
 
     def _save(self) -> None:
         self.state["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self.path.write_text(json.dumps(self.state, indent=2, sort_keys=True))
+        atomic_write_json(self.path, self.state)
 
     def _vector_score(self, features: dict[str, float]) -> float:
         score = float(self.state.get("bias") or 0.0)
@@ -62,6 +63,7 @@ class AdaptiveSignalModel:
         return _sigmoid(self._vector_score(features))
 
     def summary(self, features: dict[str, float]) -> ModelSignal:
+        self.state = self._load_state()
         probability = self.probability(features)
         adjustment = (probability - 0.5) * 2.0
         resolved = int(self.state.get("resolved_predictions") or 0)
@@ -90,6 +92,17 @@ class AdaptiveSignalModel:
         if not self.settings.enable_learning:
             return
 
+        predicted_at = (timestamp or datetime.now(timezone.utc)).isoformat()
+        duplicate = any(
+            item.get("market_code") == market_code
+            and item.get("interval") == interval
+            and item.get("period") == period
+            and item.get("predicted_at") == predicted_at
+            for item in self.state["pending_predictions"]
+        )
+        if duplicate:
+            return
+
         self.state["pending_predictions"].append(
             {
                 "id": str(uuid4()),
@@ -99,7 +112,7 @@ class AdaptiveSignalModel:
                 "features": {name: float(value) for name, value in features.items()},
                 "interval": interval,
                 "period": period,
-                "predicted_at": (timestamp or datetime.now(timezone.utc)).isoformat(),
+                "predicted_at": predicted_at,
                 "resolved": False,
             }
         )
@@ -145,12 +158,18 @@ class AdaptiveSignalModel:
             move = (float(current_price) - entry_price) / entry_price
             threshold = float(self.settings.learning_min_move_pct)
 
-            if direction == "bullish":
-                label = 1 if move >= threshold else 0
-            elif direction == "bearish":
-                label = 1 if move <= -threshold else 0
-            else:
-                label = 1 if abs(move) < threshold else 0
+            if abs(move) < threshold:
+                item["resolved"] = True
+                item["resolved_at"] = current.isoformat()
+                item["outcome_label"] = None
+                item["realized_move_pct"] = round(move * 100, 4)
+                item["actual_price"] = float(current_price)
+                retained.append(item)
+                updated += 1
+                continue
+
+            # The model estimates future price direction: 1 is up and 0 is down.
+            label = 1 if move > 0 else 0
 
             features = {name: float(value) for name, value in item.get("features", {}).items()}
             probability = self.probability(features)
@@ -163,7 +182,8 @@ class AdaptiveSignalModel:
 
             self.state["bias"] = float(self.state.get("bias") or 0.0) + (self.settings.learning_rate * error)
             self.state["resolved_predictions"] = int(self.state.get("resolved_predictions") or 0) + 1
-            if label == 1:
+            predicted_correctly = (direction == "bullish" and label == 1) or (direction == "bearish" and label == 0)
+            if predicted_correctly:
                 self.state["correct_predictions"] = int(self.state.get("correct_predictions") or 0) + 1
 
             item["resolved"] = True

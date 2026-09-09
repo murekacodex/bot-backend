@@ -1,5 +1,9 @@
+import threading
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.analysis import analyze_market, summarize_timeframe
 from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
@@ -13,6 +17,7 @@ from app.session import attach_market_status
 from app.signal_journal import list_signal_log, record_signal, record_signals, resolve_signal_outcomes, signal_outcome_stats
 
 settings = get_settings()
+settings.validate_security()
 learner = AdaptiveSignalModel()
 
 app = FastAPI(
@@ -87,6 +92,7 @@ def candles(
     period: str = Query(default=settings.default_period),
     _: UserPublic = Depends(current_user),
 ) -> list[Candle]:
+    validate_timeframe(interval, period)
     try:
         market = get_market(code)
         frame = fetch_candles(market, interval=interval, period=period)
@@ -117,6 +123,20 @@ TIMEFRAME_MAP = {
     "1d": {"lower": ("1h", "5d"), "higher": ("1wk", "1y")},
 }
 
+SUPPORTED_TIMEFRAMES = {
+    "15m": {"1d", "5d", "1mo"},
+    "30m": {"1d", "5d", "1mo"},
+    "1h": {"5d", "1mo", "3mo"},
+    "4h": {"1mo", "3mo"},
+    "1d": {"3mo"},
+}
+
+
+def validate_timeframe(interval: str, period: str) -> None:
+    if period not in SUPPORTED_TIMEFRAMES.get(interval, set()):
+        supported = ", ".join(sorted(SUPPORTED_TIMEFRAMES.get(interval, set()))) or "none"
+        raise HTTPException(status_code=422, detail=f"Unsupported timeframe. {interval} supports: {supported}")
+
 
 def timeframe_contexts(market: Market, interval: str) -> tuple[dict, list[str]]:
     contexts = {}
@@ -144,6 +164,7 @@ def signals(
     include_closed: bool = Query(default=False),
     _: UserPublic = Depends(current_user),
 ) -> list[Signal]:
+    validate_timeframe(interval, period)
     output: list[Signal] = []
     errors: list[str] = []
 
@@ -206,6 +227,7 @@ def signal(
     include_news: bool = Query(default=settings.enable_news_analysis),
     _: UserPublic = Depends(current_user),
 ) -> Signal:
+    validate_timeframe(interval, period)
     try:
         market = get_market(code)
         market = attach_market_status(market)
@@ -222,3 +244,15 @@ def signal(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+if settings.enable_background_worker:
+    from app.bot import main as worker_main
+
+    @app.on_event("startup")
+    def start_background_worker() -> None:
+        threading.Thread(target=worker_main, name="signal-worker", daemon=True).start()
+
+
+if settings.static_dir and Path(settings.static_dir).is_dir():
+    app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="frontend")

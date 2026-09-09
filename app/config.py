@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     news_lookback_hours: int = Field(default=24, alias="NEWS_LOOKBACK_HOURS")
     filter_closed_markets: bool = Field(default=True, alias="FILTER_CLOSED_MARKETS")
     enable_learning: bool = Field(default=True, alias="ENABLE_LEARNING")
+    enable_background_worker: bool = Field(default=False, alias="ENABLE_BACKGROUND_WORKER")
+    static_dir: str | None = Field(default=None, alias="STATIC_DIR")
     enable_session_suggestions: bool = Field(default=True, alias="ENABLE_SESSION_SUGGESTIONS")
     session_timezone: str = Field(default="Africa/Nairobi", alias="SESSION_TIMEZONE")
     asia_session_open: str = Field(default="03:00", alias="ASIA_SESSION_OPEN")
@@ -36,6 +38,8 @@ class Settings(BaseSettings):
     model_state_path: str = Field(default="data/model_state.json", alias="MODEL_STATE_PATH")
     auth_state_path: str = Field(default="data/users.json", alias="AUTH_STATE_PATH")
     auth_secret_key: str = Field(default="change-this-auth-secret", alias="AUTH_SECRET_KEY")
+    environment: str = Field(default="development", alias="ENVIRONMENT")
+    account_currency: str = Field(default="USD", alias="ACCOUNT_CURRENCY")
     auth_token_ttl_hours: int = Field(default=24, alias="AUTH_TOKEN_TTL_HOURS")
     risk_account_balance: float = Field(default=1000.0, alias="RISK_ACCOUNT_BALANCE")
     risk_percent: float = Field(default=1.0, alias="RISK_PERCENT")
@@ -46,6 +50,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    def validate_security(self) -> None:
+        if self.environment.lower() == "production" and self.auth_secret_key == "change-this-auth-secret":
+            raise RuntimeError("AUTH_SECRET_KEY must be set to a strong unique value in production")
 
 
 @lru_cache

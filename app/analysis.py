@@ -105,11 +105,18 @@ def _suggested_lot_size(market: Market, entry: float, stop_loss: float, risk_amo
 
     units = _contract_units(market)
     quote_currency = market.code[-3:]
-    quote_conversion = entry if market.category == "forex" and quote_currency != "USD" else 1.0
+    if market.category == "forex" and quote_currency != "USD":
+        if market.code.startswith("USD"):
+            quote_conversion = entry
+        else:
+            return 0.0
+    else:
+        quote_conversion = 1.0
     per_lot_risk = (price_risk * units) / max(quote_conversion, 1e-12)
     if per_lot_risk <= 0:
         return 0.0
-    return round(max(risk_amount / per_lot_risk, 0.01), 2)
+    lot_size = risk_amount / per_lot_risk
+    return round(lot_size, 2) if lot_size >= 0.01 else 0.0
 
 
 def _prepared_indicators(frame: pd.DataFrame) -> pd.DataFrame:
@@ -353,6 +360,10 @@ def analyze_market(
             risk_amount=round(risk_amount, 2),
             suggested_lot_size=_suggested_lot_size(market, close, stop_loss, risk_amount),
         )
+        if risk.suggested_lot_size == 0 and market.category == "forex" and market.code[-3:] != settings.account_currency:
+            warnings.append(
+                f"Lot size omitted because {market.code[-3:]} to {settings.account_currency} conversion is unavailable"
+            )
 
     timestamp = data.index[-1]
     if timestamp.tzinfo is None:

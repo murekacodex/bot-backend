@@ -16,10 +16,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
 from app.models import CreateUserRequest, LoginRequest, UpdateUserRequest, UserPublic
+from app.persistence import atomic_write_json, file_lock
 
 
 security = HTTPBearer(auto_error=False)
 _lock = threading.Lock()
+_login_attempts: dict[str, list[datetime]] = {}
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW = timedelta(minutes=15)
 
 
 def _now() -> datetime:
@@ -60,10 +64,7 @@ def _write_state(state: dict[str, list[dict[str, Any]]]) -> None:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     _coerce_single_admin(state)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(state, file, indent=2, sort_keys=True)
-    temporary.replace(path)
+    atomic_write_json(path, state)
 
 
 def _normalize_username(username: str) -> str:
@@ -108,15 +109,20 @@ def _find_user(state: dict[str, list[dict[str, Any]]], username: str) -> dict[st
 
 
 def users_exist() -> bool:
-    with _lock:
+    with _lock, file_lock(_state_path()):
         return bool(_read_state()["users"])
 
 
 def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]:
     username = _normalize_username(payload.username)
-    timestamp = _now().isoformat()
+    timestamp_dt = _now()
+    timestamp = timestamp_dt.isoformat()
 
-    with _lock:
+    with _lock, file_lock(_state_path()):
+        recent_attempts = [attempt for attempt in _login_attempts.get(username, []) if timestamp_dt - attempt < _LOGIN_WINDOW]
+        _login_attempts[username] = recent_attempts
+        if len(recent_attempts) >= _MAX_LOGIN_ATTEMPTS:
+            raise HTTPException(status_code=429, detail="Too many login attempts; try again later")
         state = _read_state()
         setup_admin = False
 
@@ -137,6 +143,7 @@ def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]
         else:
             user = _find_user(state, username)
             if not user or not _verify_password(payload.password, str(user.get("password_hash", ""))):
+                _login_attempts[username].append(timestamp_dt)
                 raise HTTPException(status_code=401, detail="Invalid username or password")
             if not user.get("is_active", True):
                 raise HTTPException(status_code=403, detail="User access is disabled")
@@ -144,6 +151,7 @@ def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]
             user["updated_at"] = timestamp
             _write_state(state)
 
+        _login_attempts.pop(username, None)
         public = _public_user(user)
         return create_token(public), public, setup_admin
 
@@ -185,7 +193,7 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     if credentials is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     payload = _decode_token(credentials.credentials)
-    with _lock:
+    with _lock, file_lock(_state_path()):
         state = _read_state()
         user = next((item for item in state["users"] if item.get("id") == payload.get("sub")), None)
     if not user:
@@ -202,14 +210,14 @@ def admin_user(user: UserPublic = Depends(current_user)) -> UserPublic:
 
 
 def list_users() -> list[UserPublic]:
-    with _lock:
+    with _lock, file_lock(_state_path()):
         return [_public_user(user) for user in _read_state()["users"]]
 
 
 def create_user(payload: CreateUserRequest) -> UserPublic:
     username = _normalize_username(payload.username)
     timestamp = _now().isoformat()
-    with _lock:
+    with _lock, file_lock(_state_path()):
         state = _read_state()
         if _find_user(state, username):
             raise HTTPException(status_code=409, detail="Username already exists")
@@ -229,7 +237,7 @@ def create_user(payload: CreateUserRequest) -> UserPublic:
 
 
 def update_user(user_id: str, payload: UpdateUserRequest, acting_user: UserPublic) -> UserPublic:
-    with _lock:
+    with _lock, file_lock(_state_path()):
         state = _read_state()
         user = next((item for item in state["users"] if item.get("id") == user_id), None)
         if not user:
@@ -252,7 +260,7 @@ def update_user(user_id: str, payload: UpdateUserRequest, acting_user: UserPubli
 
 
 def delete_user(user_id: str, acting_user: UserPublic) -> None:
-    with _lock:
+    with _lock, file_lock(_state_path()):
         state = _read_state()
         user = next((item for item in state["users"] if item.get("id") == user_id), None)
         if not user:

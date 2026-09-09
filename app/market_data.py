@@ -24,9 +24,10 @@ def fetch_candles(market: Market, interval: str | None = None, period: str | Non
     if cached and now - cached[0] < timedelta(seconds=settings.cache_ttl_seconds):
         return cached[1].copy()
 
+    download_interval = "1h" if selected_interval == "4h" else selected_interval
     frame = yf.download(
         market.symbol,
-        interval=selected_interval,
+        interval=download_interval,
         period=selected_period,
         progress=False,
         auto_adjust=False,
@@ -42,6 +43,11 @@ def fetch_candles(market: Market, interval: str | None = None, period: str | Non
     frame = frame.rename(columns=str.lower)
     frame = frame.dropna(subset=["open", "high", "low", "close"])
     frame.index = pd.to_datetime(frame.index)
+
+    if selected_interval == "4h":
+        frame = frame.resample("4h").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        ).dropna(subset=["open", "high", "low", "close"])
 
     _cache[key] = (now, frame)
     return frame.copy()
