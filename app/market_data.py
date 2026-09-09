@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import warnings
 
 import pandas as pd
 import yfinance as yf
@@ -7,6 +8,13 @@ from app.config import get_settings
 from app.models import Candle, Market
 
 _cache: dict[str, tuple[datetime, pd.DataFrame]] = {}
+
+warnings.filterwarnings(
+    "ignore",
+    message="The 'generic' unit for NumPy timedelta is deprecated.*",
+    category=DeprecationWarning,
+    module=r"yfinance\.utils",
+)
 
 
 def _cache_key(market: Market, interval: str, period: str) -> str:
