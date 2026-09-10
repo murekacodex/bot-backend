@@ -26,11 +26,13 @@ class AdaptiveSignalModel:
 
     def _default_state(self) -> dict:
         return {
+            "metrics_version": 2,
             "bias": 0.0,
             "weights": {},
             "samples_seen": 0,
             "resolved_predictions": 0,
             "correct_predictions": 0,
+            "squared_error_sum": 0.0,
             "pending_predictions": [],
             "updated_at": None,
         }
@@ -43,7 +45,16 @@ class AdaptiveSignalModel:
         except Exception:
             return self._default_state()
         state = self._default_state()
-        state.update(payload if isinstance(payload, dict) else {})
+        loaded = payload if isinstance(payload, dict) else {}
+        state.update(loaded)
+        if loaded.get("metrics_version") != 2:
+            # Older releases counted the rule engine's direction as model
+            # accuracy. Preserve learned weights, but restart honest model-only
+            # evaluation instead of presenting incompatible historical scores.
+            state["metrics_version"] = 2
+            state["resolved_predictions"] = 0
+            state["correct_predictions"] = 0
+            state["squared_error_sum"] = 0.0
         state["weights"] = dict(state.get("weights") or {})
         state["pending_predictions"] = list(state.get("pending_predictions") or [])
         return state
@@ -69,13 +80,17 @@ class AdaptiveSignalModel:
         resolved = int(self.state.get("resolved_predictions") or 0)
         correct = int(self.state.get("correct_predictions") or 0)
         accuracy = (correct / resolved) if resolved else None
+        brier_score = (float(self.state.get("squared_error_sum") or 0.0) / resolved) if resolved else None
+        learning_ready = resolved >= 30
         return ModelSignal(
             probability=round(probability, 4),
-            adjustment=round(adjustment, 4),
+            adjustment=round(adjustment if learning_ready else 0.0, 4),
             samples_seen=int(self.state.get("samples_seen") or 0),
             resolved_predictions=resolved,
             accuracy=round(accuracy, 4) if accuracy is not None else None,
             bias=round(float(self.state.get("bias") or 0.0), 4),
+            brier_score=round(brier_score, 4) if brier_score is not None else None,
+            learning_ready=learning_ready,
         )
 
     def register_prediction(
@@ -182,9 +197,11 @@ class AdaptiveSignalModel:
 
             self.state["bias"] = float(self.state.get("bias") or 0.0) + (self.settings.learning_rate * error)
             self.state["resolved_predictions"] = int(self.state.get("resolved_predictions") or 0) + 1
-            predicted_correctly = (direction == "bullish" and label == 1) or (direction == "bearish" and label == 0)
+            predicted_label = 1 if probability >= 0.5 else 0
+            predicted_correctly = predicted_label == label
             if predicted_correctly:
                 self.state["correct_predictions"] = int(self.state.get("correct_predictions") or 0) + 1
+            self.state["squared_error_sum"] = float(self.state.get("squared_error_sum") or 0.0) + ((probability - label) ** 2)
 
             item["resolved"] = True
             item["resolved_at"] = current.isoformat()

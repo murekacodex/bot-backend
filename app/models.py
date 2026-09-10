@@ -114,6 +114,17 @@ class ModelSignal(BaseModel):
     resolved_predictions: int
     accuracy: float | None = None
     bias: float
+    brier_score: float | None = None
+    learning_ready: bool = False
+
+
+class PatternHint(BaseModel):
+    name: str
+    bias: str
+    strength: int = Field(ge=0, le=100)
+    meaning: str
+    confirmation: str
+    candle_offset: int = 0
 
 
 class LoginRequest(BaseModel):
@@ -177,6 +188,7 @@ class Signal(BaseModel):
     features: dict[str, float] | None = None
     news: NewsSentiment | None = None
     model: ModelSignal | None = None
+    patterns: list[PatternHint] = Field(default_factory=list)
     session: SessionSignal | None = None
     risk: RiskPlan | None
     last_candle: Candle

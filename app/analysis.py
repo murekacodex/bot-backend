@@ -6,7 +6,7 @@ import pandas as pd
 
 from app.learning import AdaptiveSignalModel, aggregate_features
 from app.config import get_settings
-from app.models import Candle, Market, NewsSentiment, RiskPlan, Signal, TimeframeContext
+from app.models import Candle, Market, NewsSentiment, PatternHint, RiskPlan, Signal, TimeframeContext
 from app.session import recommend_session_entry
 
 
@@ -26,7 +26,7 @@ def _atr(frame: pd.DataFrame, length: int = 14) -> pd.Series:
     return true_range.rolling(length).mean()
 
 
-def _detect_patterns(frame: pd.DataFrame) -> tuple[list[str], float]:
+def _detect_patterns(frame: pd.DataFrame) -> tuple[list[PatternHint], float]:
     if len(frame) < 3:
         return [], 0
 
@@ -38,7 +38,7 @@ def _detect_patterns(frame: pd.DataFrame) -> tuple[list[str], float]:
     candle_range = max(current.high - current.low, 1e-12)
     upper_wick = current.high - max(current.open, current.close)
     lower_wick = min(current.open, current.close) - current.low
-    patterns: list[str] = []
+    patterns: list[PatternHint] = []
     score = 0.0
 
     current_bullish = current.close > current.open
@@ -47,30 +47,30 @@ def _detect_patterns(frame: pd.DataFrame) -> tuple[list[str], float]:
     previous_bullish = previous.close > previous.open
 
     if current_bullish and previous_bearish and current.close > previous.open and current.open < previous.close:
-        patterns.append("Bullish engulfing candle")
+        patterns.append(PatternHint(name="Bullish engulfing", bias="bullish", strength=82, meaning="Buyers fully covered the previous bearish body.", confirmation="Prefer a close above this candle's high.", candle_offset=0))
         score += 1.5
 
     if current_bearish and previous_bullish and current.open > previous.close and current.close < previous.open:
-        patterns.append("Bearish engulfing candle")
+        patterns.append(PatternHint(name="Bearish engulfing", bias="bearish", strength=82, meaning="Sellers fully covered the previous bullish body.", confirmation="Prefer a close below this candle's low.", candle_offset=0))
         score -= 1.5
 
     if lower_wick > body * 2 and upper_wick < body and body / candle_range < 0.45:
-        patterns.append("Hammer-style rejection from lows")
+        patterns.append(PatternHint(name="Hammer", bias="bullish", strength=68, meaning="Lower prices were rejected before the candle closed.", confirmation="Wait for the next candle to break the hammer high.", candle_offset=0))
         score += 1.0
 
     if upper_wick > body * 2 and lower_wick < body and body / candle_range < 0.45:
-        patterns.append("Shooting-star rejection from highs")
+        patterns.append(PatternHint(name="Shooting star", bias="bearish", strength=68, meaning="Higher prices were rejected before the candle closed.", confirmation="Wait for the next candle to break the star low.", candle_offset=0))
         score -= 1.0
 
     if body / candle_range < 0.1:
-        patterns.append("Doji indecision candle")
+        patterns.append(PatternHint(name="Doji", bias="neutral", strength=45, meaning="Buyers and sellers finished near balance.", confirmation="Do not predict direction until price breaks the doji range.", candle_offset=0))
 
     if before.close < before.open and previous.close < previous.open and current_bullish and current.close > previous.open:
-        patterns.append("Three-candle bullish reversal attempt")
+        patterns.append(PatternHint(name="Three-candle bullish reversal", bias="bullish", strength=72, meaning="Selling pressure weakened and buyers reclaimed the prior body.", confirmation="Confirm with follow-through above the formation high.", candle_offset=0))
         score += 1.0
 
     if before.close > before.open and previous.close > previous.open and current_bearish and current.close < previous.open:
-        patterns.append("Three-candle bearish reversal attempt")
+        patterns.append(PatternHint(name="Three-candle bearish reversal", bias="bearish", strength=72, meaning="Buying pressure weakened and sellers reclaimed the prior body.", confirmation="Confirm with follow-through below the formation low.", candle_offset=0))
         score -= 1.0
 
     return patterns, score
@@ -273,7 +273,7 @@ def analyze_market(
             reasons.append("RSI is balanced")
 
     if patterns:
-        reasons.extend(patterns)
+        reasons.extend(pattern.name for pattern in patterns)
 
     timeframe_context = timeframes or {}
     higher_context = timeframe_context.get("higher")
@@ -398,6 +398,7 @@ def analyze_market(
         features=feature_map,
         news=news,
         model=model_signal,
+        patterns=patterns,
         session=session_signal,
         risk=risk,
         last_candle=Candle(

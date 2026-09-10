@@ -5,7 +5,9 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.analysis import _suggested_lot_size
+import pandas as pd
+
+from app.analysis import _detect_patterns, _suggested_lot_size
 from app.learning import AdaptiveSignalModel
 from app.main import validate_timeframe
 from app.models import Market
@@ -71,7 +73,29 @@ class LearningTests(unittest.TestCase):
         )
         self.model.update_from_price("EURUSD", 0.98, now=timestamp + timedelta(hours=25))
         self.assertLess(self.model.state["weights"]["technical_score"], 0)
-        self.assertEqual(self.model.state["correct_predictions"], 1)
+        # An untrained model starts at 50% (classified upward), so its own
+        # prediction was wrong even though the rule-based direction was right.
+        self.assertEqual(self.model.state["correct_predictions"], 0)
+        self.assertEqual(self.model.state["squared_error_sum"], 0.25)
+
+    def test_model_does_not_adjust_signals_before_warmup(self):
+        summary = self.model.summary({"technical_score": 1.0})
+        self.assertFalse(summary.learning_ready)
+        self.assertEqual(summary.adjustment, 0.0)
+
+
+class PatternTests(unittest.TestCase):
+    def test_bullish_engulfing_returns_explainable_hint(self):
+        frame = pd.DataFrame([
+            {"open": 1.01, "high": 1.02, "low": 0.99, "close": 1.00},
+            {"open": 1.00, "high": 1.01, "low": 0.97, "close": 0.98},
+            {"open": 0.97, "high": 1.02, "low": 0.96, "close": 1.01},
+        ])
+        patterns, score = _detect_patterns(frame)
+        engulfing = next(pattern for pattern in patterns if pattern.name == "Bullish engulfing")
+        self.assertEqual(engulfing.bias, "bullish")
+        self.assertIn("close above", engulfing.confirmation)
+        self.assertGreater(score, 0)
 
 
 class MarketHoursTests(unittest.TestCase):
