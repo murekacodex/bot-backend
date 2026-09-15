@@ -64,6 +64,62 @@ Environment variables:
 - `SIGNAL_LOG_PATH`: file path used to persist generated signal history and outcomes.
 - `SIGNAL_OUTCOME_HORIZON_HOURS`: minimum age before a logged signal can be scored.
 - `SIGNAL_OUTCOME_MIN_MOVE_PCT`: minimum realized move used to decide if a signal succeeded.
+- `EDGE_MIN_SAMPLES`: resolved comparable signals required before historical edge affects scoring.
+- `EDGE_MAX_SAMPLES`: maximum recent outcomes included in an edge estimate.
+- `EDGE_DECAY`: per-observation weight decay applied from newest to oldest.
+- `EDGE_PRIOR_SAMPLES`: zero-expectancy Bayesian prior strength used to resist overfitting.
+- `EDGE_MAX_SCORE_ADJUSTMENT`: maximum positive or negative live-score adjustment.
+- `TELEGRAM_BOT_TOKEN`: BotFather token used for alerts and the private assistant.
+- `TELEGRAM_CHAT_ID`: owner chat ID; only this chat can submit assistant requests.
+- `TELEGRAM_ASSISTANT_STATE_PATH`: persisted OpenAI conversation IDs.
+- `OPENAI_API_KEY`: OpenAI project API key required to enable Telegram assistant replies.
+- `OPENAI_MODEL`: Responses API model, defaults to `gpt-5.4`.
+- `OPENAI_BACKGROUND_POLL_SECONDS`: interval for checking background response completion.
+- `OPENAI_BACKGROUND_TIMEOUT_SECONDS`: maximum time to wait before reporting a timeout.
+- `TELEGRAM_MARKET_UPDATE_HOURS`: minimum interval between no-setup market updates; set to `0` to disable.
+
+## Telegram Trade Alerts
+
+All configured forex and metals markets are eligible. Direction-aware trend,
+RSI, candlestick, volatility, and preferred-session checks classify qualifying
+setups as `ENTRY READY` or `WATCHLIST`. If neither tier qualifies while markets
+are open, a rate-limited market update confirms that the scanner is still running.
+
+## Strategy and Research Framework
+
+Live signals evaluate trend pullback, volatility breakout, and range-reversion
+strategies. Each response includes the detected market regime, a weighted
+trend/momentum/structure/volatility/session/macro factor breakdown, all strategy
+evaluations, and the selected strategy. Risk is reduced for watchlists, high
+volatility, and low-volatility conditions.
+
+Research endpoints:
+
+- `GET /research/regime/{code}`: current trend, volatility, and volume regime.
+- `GET /research/backtest/{code}`: completed-candle, next-open historical simulation.
+- `GET /research/monte-carlo/{code}`: bootstrapped loss and drawdown distribution.
+- `GET /research/optimize/{code}`: admin-only grid search with chronological out-of-sample validation.
+- `GET /research/attribution`: win rates by strategy, market, direction, and regime.
+- `POST /research/macro`: deterministic rates, inflation, and growth assessment.
+- `POST /research/portfolio-risk`: aggregate currency exposure and concentration warnings.
+
+Backtests include pessimistic same-candle stop/target ordering and do not use a
+forming candle. Results are research estimates, not profitability guarantees.
+
+Historical winner similarity is never a hard market filter. The live engine uses
+recent R-multiple expectancy only after the minimum sample count is reached,
+shrinks it toward zero, and decays old observations. Negative evidence demotes
+an otherwise ready setup to the watchlist. Optimized parameters are marked
+promotion-eligible only after at least 30 profitable, positive-Sharpe validation
+trades with less than 20% maximum drawdown.
+
+## Telegram Assistant
+
+After the Telegram owner is authorized, send any ordinary text message to start
+an assistant request. The bot acknowledges the request immediately and sends the
+answer when the background response completes. Only one request per owner chat
+runs at a time. Send `/reset` to start a fresh conversation. Trade alerts and
+the existing `/start` and `/status` commands continue to work independently.
 
 ## Access Control
 

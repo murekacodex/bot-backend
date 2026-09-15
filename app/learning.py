@@ -107,6 +107,7 @@ class AdaptiveSignalModel:
         if not self.settings.enable_learning:
             return
 
+        self.state = self._load_state()
         predicted_at = (timestamp or datetime.now(timezone.utc)).isoformat()
         duplicate = any(
             item.get("market_code") == market_code

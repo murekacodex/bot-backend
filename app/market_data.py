@@ -9,6 +9,21 @@ from app.models import Candle, Market
 
 _cache: dict[str, tuple[datetime, pd.DataFrame]] = {}
 
+_INTERVAL_DURATION = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "1d": timedelta(days=1),
+    "1wk": timedelta(days=7),
+}
+
+
+def interval_duration(interval: str) -> timedelta:
+    return _INTERVAL_DURATION.get(interval, timedelta(hours=1))
+
 warnings.filterwarnings(
     "ignore",
     message="The 'generic' unit for NumPy timedelta is deprecated.*",
@@ -19,6 +34,28 @@ warnings.filterwarnings(
 
 def _cache_key(market: Market, interval: str, period: str) -> str:
     return f"{market.symbol}:{interval}:{period}"
+
+
+def completed_candles(frame: pd.DataFrame, interval: str, now: datetime | None = None) -> pd.DataFrame:
+    """Exclude a provider's still-forming final bar so signals cannot repaint."""
+    if frame.empty:
+        return frame
+    duration = _INTERVAL_DURATION.get(interval)
+    if duration is None:
+        return frame
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    final_open = pd.Timestamp(frame.index[-1])
+    if final_open.tzinfo is None:
+        final_open = final_open.tz_localize(timezone.utc)
+    else:
+        final_open = final_open.tz_convert(timezone.utc)
+    if final_open.to_pydatetime() + duration > current:
+        return frame.iloc[:-1]
+    return frame
 
 
 def fetch_candles(market: Market, interval: str | None = None, period: str | None = None) -> pd.DataFrame:
@@ -56,6 +93,10 @@ def fetch_candles(market: Market, interval: str | None = None, period: str | Non
         frame = frame.resample("4h").agg(
             {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
         ).dropna(subset=["open", "high", "low", "close"])
+
+    frame = completed_candles(frame, selected_interval, now=now)
+    if frame.empty:
+        raise ValueError(f"No completed candle data returned for {market.code}")
 
     _cache[key] = (now, frame)
     return frame.copy()

@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import json
+import hashlib
+import hmac
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib import parse, request
+
+from app.config import get_settings
+from app.models import Signal
+from app.persistence import atomic_write_json, file_lock
+from app.telegram_assistant import reset_conversation, start_assistant_task
+
+
+_poller_started = False
+
+
+def _api_call(method: str, payload: dict) -> dict:
+    settings = get_settings()
+    endpoint = f"https://api.telegram.org/bot{settings.telegram_bot_token}/{method}"
+    encoded = parse.urlencode(payload).encode()
+    with request.urlopen(request.Request(endpoint, data=encoded), timeout=35) as response:
+        return json.loads(response.read())
+
+
+def _auth_state() -> dict:
+    path = Path(get_settings().telegram_auth_state_path)
+    try:
+        return json.loads(path.read_text()) if path.exists() else {"authorized": [], "pending": {}, "offset": 0}
+    except (OSError, json.JSONDecodeError):
+        return {"authorized": [], "pending": {}, "offset": 0}
+
+
+def _save_auth_state(state: dict) -> None:
+    path = Path(get_settings().telegram_auth_state_path)
+    with file_lock(path):
+        atomic_write_json(path, state)
+
+
+def _authorized_chat_ids() -> list[str]:
+    settings = get_settings()
+    ids = {str(value) for value in _auth_state().get("authorized", [])}
+    if settings.telegram_chat_id:
+        ids.add(str(settings.telegram_chat_id))
+    return sorted(ids)
+
+
+def _password_matches(password: str, encoded: str | None) -> bool:
+    if not encoded:
+        return False
+    try:
+        algorithm, iterations, salt, expected = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(iterations)).hex()
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _send_text(chat_id: str, text: str) -> None:
+    _api_call("sendMessage", {"chat_id": chat_id, "text": text})
+
+
+def _handle_update(update: dict, state: dict) -> None:
+    message = update.get("message") or {}
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    text = str(message.get("text") or "").strip()
+    message_id = message.get("message_id")
+    settings = get_settings()
+    if not chat_id or not text:
+        return
+    if _password_matches(text, settings.telegram_access_keyword_hash):
+        if message_id is not None:
+            try:
+                _api_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            except Exception:
+                pass
+        if settings.telegram_chat_id and hmac.compare_digest(chat_id, str(settings.telegram_chat_id)):
+            _send_text(chat_id, "✅ Owner identity confirmed.")
+        return
+    if chat_id in _authorized_chat_ids():
+        if text.startswith("/start"):
+            _send_text(
+                chat_id,
+                "📈 Trade Alerts Bot\n\n"
+                "Your access is active. You will receive viable-entry alerts with direction, timeframe, "
+                "session, entry, stop loss, take profits, confidence, and score.\n\n"
+                "Use /status at any time to confirm access.",
+            )
+        elif text.startswith("/status"):
+            _send_text(chat_id, "✅ Trade-alert access is active on this device.")
+        elif (
+            text.startswith("/reset")
+            and settings.telegram_chat_id
+            and hmac.compare_digest(chat_id, str(settings.telegram_chat_id))
+        ):
+            reset_conversation(chat_id)
+            _send_text(chat_id, "✅ Assistant conversation reset.")
+        elif settings.telegram_chat_id and hmac.compare_digest(chat_id, str(settings.telegram_chat_id)):
+            if not settings.openai_api_key:
+                _send_text(chat_id, "⚠️ Telegram assistant is not configured yet. Add OPENAI_API_KEY on the server.")
+            elif not start_assistant_task(chat_id, text, _send_text):
+                _send_text(chat_id, "⏳ I’m still working on your previous request. Please wait for the result.")
+        return
+    pending = state.setdefault("pending", {})
+    if text.startswith("/start") or text.startswith("/login"):
+        pending[chat_id] = "username"
+        _send_text(
+            chat_id,
+            "📈 Trade Alerts Bot\n\n"
+            "To activate alerts, enter your username and password when prompted. "
+            "Your username and password messages are deleted after they are checked.\n\n"
+            "Enter your username:",
+        )
+    elif pending.get(chat_id) == "username":
+        if message_id is not None:
+            try:
+                _api_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            except Exception:
+                pass
+        if hmac.compare_digest(text, settings.telegram_access_username or ""):
+            pending[chat_id] = "password"
+            _send_text(chat_id, "Enter your password (this message will be deleted after checking):")
+        else:
+            pending.pop(chat_id, None)
+            _send_text(chat_id, "Access denied. Send /login to try again.")
+    elif pending.get(chat_id) == "password":
+        if message_id is not None:
+            try:
+                _api_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            except Exception:
+                pass
+        if _password_matches(text, settings.telegram_access_password_hash):
+            authorized = {str(value) for value in state.setdefault("authorized", [])}
+            authorized.add(chat_id)
+            state["authorized"] = sorted(authorized)
+            _send_text(chat_id, "✅ Access approved. Viable trade alerts are enabled.")
+        else:
+            _send_text(chat_id, "Access denied. Send /login to try again.")
+        pending.pop(chat_id, None)
+
+
+def poll_telegram_updates() -> None:
+    settings = get_settings()
+    if not all((settings.telegram_bot_token, settings.telegram_access_username, settings.telegram_access_password_hash, settings.telegram_access_keyword_hash)):
+        return
+    while True:
+        state = _auth_state()
+        try:
+            result = _api_call("getUpdates", {"offset": int(state.get("offset", 0)), "timeout": 25})
+            for update in result.get("result", []):
+                state["offset"] = int(update["update_id"]) + 1
+                _handle_update(update, state)
+                _save_auth_state(state)
+        except Exception:
+            time.sleep(5)
+
+
+def start_telegram_poller() -> None:
+    global _poller_started
+    if _poller_started:
+        return
+    _poller_started = True
+    threading.Thread(target=poll_telegram_updates, name="telegram-auth", daemon=True).start()
+
+
+def _alert_key(signal: Signal, tier: str = "entry_ready") -> str:
+    return ":".join((tier, signal.market.code, signal.interval, signal.direction, signal.timestamp))
+
+
+def _message(signal: Signal, tier: str = "entry_ready") -> str:
+    risk = signal.risk
+    if risk is None:
+        return ""
+    heading = "🚨 ENTRY READY" if tier == "entry_ready" else "👀 WATCHLIST"
+    strategy = getattr(signal, "strategy", None) or "Multi-factor setup"
+    regime = getattr(signal, "regime", None)
+    edge = getattr(signal, "historical_edge", None)
+    sessions = " / ".join(part.replace("_", " ").title() for part in signal.session.active_sessions) if signal.session else "Unknown"
+    return "\n".join(
+        (
+            f"{heading}: {signal.market.code}",
+            f"Direction: {signal.direction.upper()}",
+            f"Strategy: {strategy}",
+            f"Regime: {regime.trend.title() if regime else 'Unknown'} / {regime.volatility.title() if regime else 'Unknown'} volatility",
+            f"Timeframe: {signal.interval}",
+            f"Session: {sessions}",
+            f"Entry: {risk.entry}",
+            f"Stop loss: {risk.stop_loss}",
+            f"Take profit 1: {risk.take_profit_1}",
+            f"Take profit 2: {risk.take_profit_2}",
+            f"Confidence: {signal.confidence}%",
+            f"Score: {signal.score}",
+            (
+                f"Recent edge: {edge.expectancy_r:+.2f}R from {edge.samples} samples"
+                if edge and edge.sufficient_evidence
+                else "Recent edge: collecting evidence"
+            ),
+            "Confirm live price and spread with your broker before entering.",
+        )
+    )
+
+
+def send_viable_entry_alert(signal: Signal, tier: str = "entry_ready") -> bool:
+    settings = get_settings()
+    if not settings.telegram_bot_token or signal.risk is None:
+        return False
+
+    state_path = Path(settings.telegram_alert_state_path)
+    key = _alert_key(signal, tier=tier)
+    with file_lock(state_path):
+        try:
+            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
+        except (OSError, json.JSONDecodeError):
+            state = {"sent": []}
+        sent = list(state.get("sent") or [])
+        if key in sent:
+            return False
+
+    try:
+        chat_ids = _authorized_chat_ids()
+        if not chat_ids:
+            return False
+        delivered = False
+        for chat_id in chat_ids:
+            result = _api_call("sendMessage", {"chat_id": chat_id, "text": _message(signal, tier=tier)})
+            delivered = delivered or bool(result.get("ok"))
+        if not delivered:
+            return False
+    except Exception as exc:
+        print(json.dumps({"telegram_alert_error": str(exc)}), flush=True)
+        return False
+
+    with file_lock(state_path):
+        try:
+            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
+        except (OSError, json.JSONDecodeError):
+            state = {"sent": []}
+        sent = list(state.get("sent") or [])
+        if key not in sent:
+            sent.append(key)
+        atomic_write_json(state_path, {"sent": sent[-500:]})
+    return True
+
+
+def send_market_update(signals: list[Signal]) -> bool:
+    settings = get_settings()
+    if not settings.telegram_bot_token or settings.telegram_market_update_hours <= 0 or not signals:
+        return False
+    state_path = Path(settings.telegram_alert_state_path)
+    now = datetime.now(timezone.utc)
+    with file_lock(state_path):
+        try:
+            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
+        except (OSError, json.JSONDecodeError):
+            state = {"sent": []}
+        last_value = state.get("last_market_update")
+        if last_value:
+            try:
+                last_update = datetime.fromisoformat(str(last_value))
+                if now - last_update < timedelta(hours=settings.telegram_market_update_hours):
+                    return False
+            except ValueError:
+                pass
+
+    strongest = sorted(signals, key=lambda item: abs(item.score), reverse=True)[:3]
+    summary = "\n".join(
+        f"• {signal.market.code}: {signal.direction}, score {signal.score}, confidence {signal.confidence}%"
+        for signal in strongest
+    )
+    text = (
+        "ℹ️ MARKET UPDATE\n\n"
+        "The scanner is running, but no setup currently meets the entry or watchlist rules.\n\n"
+        f"Strongest readings:\n{summary}"
+    )
+    try:
+        chat_ids = _authorized_chat_ids()
+        delivered = False
+        for chat_id in chat_ids:
+            result = _api_call("sendMessage", {"chat_id": chat_id, "text": text})
+            delivered = delivered or bool(result.get("ok"))
+        if not delivered:
+            return False
+    except Exception as exc:
+        print(json.dumps({"telegram_market_update_error": str(exc)}), flush=True)
+        return False
+
+    with file_lock(state_path):
+        try:
+            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
+        except (OSError, json.JSONDecodeError):
+            state = {"sent": []}
+        state["last_market_update"] = now.isoformat()
+        atomic_write_json(state_path, state)
+    return True

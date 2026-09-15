@@ -1,20 +1,26 @@
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.analysis import analyze_market, summarize_timeframe
+from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier, summarize_timeframe
 from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
 from app.config import get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import dataframe_to_candles, fetch_candles
+from app.macro import assess_macro
 from app.markets import MARKETS, get_market
-from app.models import AuthResponse, Candle, CreateUserRequest, LoginRequest, Market, NewsSentiment, Signal, SignalLogEntry, SignalOutcomeStats, UpdateUserRequest, UserPublic
+from app.models import AuthResponse, Candle, CreateUserRequest, LoginRequest, MacroAssessment, MacroInputs, Market, MarketRegime, NewsSentiment, Signal, SignalLogEntry, SignalOutcomeStats, UpdateUserRequest, UserPublic
 from app.news import fetch_news_sentiment
+from app.portfolio_risk import currency_exposure, exposure_warnings
+from app.regime import classify_regime
+from app.research import attribute_outcomes, backtest_frame, monte_carlo, optimize_strategy
 from app.session import attach_market_status
 from app.signal_journal import list_signal_log, record_signal, record_signals, resolve_signal_outcomes, signal_outcome_stats
+from app.telegram_alerts import send_viable_entry_alert, start_telegram_poller
 
 settings = get_settings()
 settings.validate_security()
@@ -33,6 +39,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def start_integrations() -> None:
+    start_telegram_poller()
 
 
 @app.get("/health")
@@ -115,6 +126,7 @@ def news(code: str, _: UserPublic = Depends(current_user)) -> NewsSentiment:
 
 
 TIMEFRAME_MAP = {
+    "1m": {"lower": None, "higher": ("5m", "1d")},
     "5m": {"lower": None, "higher": ("15m", "1d")},
     "15m": {"lower": ("5m", "1d"), "higher": ("1h", "5d")},
     "30m": {"lower": ("15m", "1d"), "higher": ("1h", "5d")},
@@ -124,6 +136,7 @@ TIMEFRAME_MAP = {
 }
 
 SUPPORTED_TIMEFRAMES = {
+    "1m": {"1d", "5d"},
     "15m": {"1d", "5d", "1mo"},
     "30m": {"1d", "5d", "1mo"},
     "1h": {"5d", "1mo", "3mo"},
@@ -167,8 +180,11 @@ def signals(
     validate_timeframe(interval, period)
     output: list[Signal] = []
     errors: list[str] = []
+    analyzed_count = 0
 
     for market in markets(include_closed=include_closed):
+        if market.code not in FOCUS_MARKETS:
+            continue
         if category and market.category != category:
             continue
         try:
@@ -185,11 +201,24 @@ def signals(
                 timeframes=contexts,
             )
             signal.warnings.extend(timeframe_warnings)
-            output.append(signal)
+            analyzed_count += 1
+            learner.register_prediction(
+                market_code=market.code,
+                direction=signal.direction,
+                entry_price=signal.risk.entry if signal.risk else signal.last_candle.close,
+                features=signal.features or {},
+                interval=interval,
+                period=period,
+                timestamp=datetime.fromisoformat(signal.timestamp),
+            )
+            tier = trade_candidate_tier(signal)
+            if tier:
+                output.append(signal)
+                send_viable_entry_alert(signal, tier=tier)
         except Exception as exc:  # Keep one bad data source from hiding other signals.
             errors.append(f"{market.code}: {exc}")
 
-    if not output:
+    if analyzed_count == 0 and errors:
         raise HTTPException(status_code=502, detail={"message": "No signals could be generated", "errors": errors})
 
     sorted_output = sorted(output, key=lambda signal: signal.confidence, reverse=True)
@@ -219,6 +248,82 @@ def signal_log_stats(_: UserPublic = Depends(current_user)) -> SignalOutcomeStat
     return signal_outcome_stats()
 
 
+@app.get("/research/regime/{code}", response_model=MarketRegime)
+def market_regime(
+    code: str,
+    interval: str = Query(default="1h"),
+    period: str = Query(default="1mo"),
+    _: UserPublic = Depends(current_user),
+) -> MarketRegime:
+    market = get_market(code)
+    return classify_regime(fetch_candles(market, interval=interval, period=period))
+
+
+@app.get("/research/backtest/{code}")
+def strategy_backtest(
+    code: str,
+    interval: str = Query(default="1d", pattern="^(1h|4h|1d)$"),
+    period: str = Query(default="5y", pattern="^(1y|2y|5y|10y)$"),
+    minimum_score: float = Query(default=52, ge=40, le=90),
+    reward_risk: float = Query(default=1.5, ge=1, le=4),
+    _: UserPublic = Depends(current_user),
+) -> dict:
+    market = get_market(code)
+    frame = fetch_candles(market, interval=interval, period=period)
+    result = backtest_frame(
+        frame, market, minimum_strategy_score=minimum_score, reward_risk=reward_risk
+    )
+    result["trades"] = result["trades"][-250:]
+    return result
+
+
+@app.get("/research/monte-carlo/{code}")
+def strategy_monte_carlo(
+    code: str,
+    interval: str = Query(default="1d", pattern="^(1h|4h|1d)$"),
+    period: str = Query(default="5y", pattern="^(1y|2y|5y|10y)$"),
+    simulations: int = Query(default=1000, ge=100, le=10000),
+    _: UserPublic = Depends(current_user),
+) -> dict:
+    market = get_market(code)
+    backtest = backtest_frame(fetch_candles(market, interval=interval, period=period), market)
+    return {"backtest_metrics": backtest["metrics"], "simulation": monte_carlo(backtest["trades"], simulations=simulations)}
+
+
+@app.get("/research/optimize/{code}")
+def strategy_optimization(
+    code: str,
+    interval: str = Query(default="1d", pattern="^(4h|1d)$"),
+    period: str = Query(default="5y", pattern="^(2y|5y|10y)$"),
+    _: UserPublic = Depends(admin_user),
+) -> dict:
+    market = get_market(code)
+    return optimize_strategy(fetch_candles(market, interval=interval, period=period), market)
+
+
+@app.get("/research/attribution")
+def strategy_attribution(_: UserPublic = Depends(current_user)) -> dict:
+    entries = [entry.model_dump() for entry in list_signal_log(limit=1000, include_pending=False)]
+    return attribute_outcomes(entries)
+
+
+@app.post("/research/macro", response_model=MacroAssessment)
+def macro_assessment(payload: MacroInputs, _: UserPublic = Depends(current_user)) -> MacroAssessment:
+    return assess_macro(payload)
+
+
+@app.post("/research/portfolio-risk")
+def portfolio_risk(
+    positions: list[dict],
+    account_balance: float = Query(gt=0),
+    _: UserPublic = Depends(current_user),
+) -> dict:
+    return {
+        "currency_exposure": currency_exposure(positions),
+        "warnings": exposure_warnings(positions, account_balance),
+    }
+
+
 @app.get("/signals/{code}", response_model=Signal)
 def signal(
     code: str,
@@ -238,6 +343,15 @@ def signal(
         contexts, timeframe_warnings = timeframe_contexts(market, interval)
         result = analyze_market(market, frame, interval=interval, period=period, news=market_news, learner=learner, timeframes=contexts)
         result.warnings.extend(timeframe_warnings)
+        learner.register_prediction(
+            market_code=market.code,
+            direction=result.direction,
+            entry_price=result.risk.entry if result.risk else result.last_candle.close,
+            features=result.features or {},
+            interval=interval,
+            period=period,
+            timestamp=datetime.fromisoformat(result.timestamp),
+        )
         record_signal(result, source="api_single")
         return result
     except KeyError as exc:

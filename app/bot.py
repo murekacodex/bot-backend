@@ -1,8 +1,8 @@
 import json
 import time
-from datetime import timezone
+from datetime import datetime, timezone
 
-from app.analysis import analyze_market
+from app.analysis import analyze_market, trade_candidate_tier
 from app.config import get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import fetch_candles
@@ -10,6 +10,7 @@ from app.markets import MARKETS
 from app.news import fetch_news_sentiment
 from app.session import attach_market_status
 from app.signal_journal import record_signal, resolve_signal_outcomes
+from app.telegram_alerts import send_market_update, send_viable_entry_alert
 
 
 learner = AdaptiveSignalModel()
@@ -18,6 +19,8 @@ learner = AdaptiveSignalModel()
 def run_once() -> list[dict]:
     settings = get_settings()
     signals = []
+    analyzed_signals = []
+    candidate_count = 0
     for market in [attach_market_status(market) for market in MARKETS.values()]:
         if settings.filter_closed_markets and not market.is_open:
             continue
@@ -42,17 +45,24 @@ def run_once() -> list[dict]:
             learner.register_prediction(
                 market_code=market.code,
                 direction=signal.direction,
-                entry_price=signal.last_candle.close,
+                entry_price=signal.risk.entry if signal.risk else signal.last_candle.close,
                 features=signal.features or {},
                 interval=settings.default_interval,
                 period=settings.default_period,
-                timestamp=current_time,
+                timestamp=datetime.fromisoformat(signal.timestamp),
             )
             record_signal(signal, source="worker")
+            analyzed_signals.append(signal)
+            tier = trade_candidate_tier(signal)
+            if tier:
+                candidate_count += 1
+                send_viable_entry_alert(signal, tier=tier)
             signals.append(signal.model_dump())
         except Exception as exc:
             signals.append({"market": market.code, "error": str(exc)})
     resolve_signal_outcomes()
+    if analyzed_signals and candidate_count == 0:
+        send_market_update(analyzed_signals)
     return signals
 
 

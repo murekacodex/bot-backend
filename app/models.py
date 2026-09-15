@@ -56,6 +56,10 @@ class SignalLogEntry(BaseModel):
     confidence: int
     score: float
     strategy: str
+    selected_strategy: str | None = None
+    market_regime: str | None = None
+    volatility_regime: str | None = None
+    factor_composite: float | None = None
     entry_price: float
     risk: RiskPlan | None = None
     features: dict[str, float] | None = None
@@ -127,6 +131,54 @@ class PatternHint(BaseModel):
     candle_offset: int = 0
 
 
+class MarketRegime(BaseModel):
+    trend: str
+    volatility: str
+    volume: str
+    trend_strength: float = 0.0
+    atr_percentile: float = 0.0
+    realized_volatility: float = 0.0
+
+
+class FactorBreakdown(BaseModel):
+    values: dict[str, float] = Field(default_factory=dict)
+    weights: dict[str, float] = Field(default_factory=dict)
+    composite: float = 0.0
+
+
+class HistoricalEdge(BaseModel):
+    scope: str
+    samples: int
+    effective_samples: float
+    expectancy_r: float
+    win_rate: float
+    score_adjustment: float
+    sufficient_evidence: bool
+
+
+class StrategyEvaluation(BaseModel):
+    name: str
+    direction: str
+    score: float = Field(ge=0, le=100)
+    status: str
+    reasons: list[str] = Field(default_factory=list)
+    suitable_regimes: list[str] = Field(default_factory=list)
+
+
+class MacroInputs(BaseModel):
+    policy_rate: float
+    neutral_rate: float
+    inflation: float
+    inflation_target: float = 2.0
+    growth: float
+
+
+class MacroAssessment(BaseModel):
+    bias: str
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=8, max_length=200)
@@ -189,6 +241,11 @@ class Signal(BaseModel):
     news: NewsSentiment | None = None
     model: ModelSignal | None = None
     patterns: list[PatternHint] = Field(default_factory=list)
+    regime: MarketRegime | None = None
+    factors: FactorBreakdown | None = None
+    historical_edge: HistoricalEdge | None = None
+    strategy_evaluations: list[StrategyEvaluation] = Field(default_factory=list)
+    selected_strategy: str | None = None
     session: SessionSignal | None = None
     risk: RiskPlan | None
     last_candle: Candle

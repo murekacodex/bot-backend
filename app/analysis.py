@@ -7,7 +7,19 @@ import pandas as pd
 from app.learning import AdaptiveSignalModel, aggregate_features
 from app.config import get_settings
 from app.models import Candle, Market, NewsSentiment, PatternHint, RiskPlan, Signal, TimeframeContext
+from app.market_data import interval_duration
+from app.factors import build_factor_breakdown
+from app.portfolio_risk import adjusted_risk_fraction
+from app.regime import classify_regime
 from app.session import recommend_session_entry
+from app.signal_journal import calibrated_confidence, rolling_performance_edge
+from app.strategy_engine import evaluate_strategies
+
+
+FOCUS_MARKETS = {
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD",
+    "NZDUSD", "EURGBP", "XAUUSD", "XAGUSD", "XPTUSD",
+}
 
 
 def _rsi(close: pd.Series, length: int = 14) -> pd.Series:
@@ -40,6 +52,12 @@ def _detect_patterns(frame: pd.DataFrame) -> tuple[list[PatternHint], float]:
     lower_wick = min(current.open, current.close) - current.low
     patterns: list[PatternHint] = []
     score = 0.0
+    recent = frame.iloc[-20:-1]
+    atr = float(current.atr) if "atr" in current and pd.notna(current.atr) else candle_range
+    near_support = current.low <= float(recent.low.min()) + (atr * 0.25)
+    near_resistance = current.high >= float(recent.high.max()) - (atr * 0.25)
+    prior_down = previous.close < before.close
+    prior_up = previous.close > before.close
 
     current_bullish = current.close > current.open
     previous_bearish = previous.close < previous.open
@@ -48,30 +66,36 @@ def _detect_patterns(frame: pd.DataFrame) -> tuple[list[PatternHint], float]:
 
     if current_bullish and previous_bearish and current.close > previous.open and current.open < previous.close:
         patterns.append(PatternHint(name="Bullish engulfing", bias="bullish", strength=82, meaning="Buyers fully covered the previous bearish body.", confirmation="Prefer a close above this candle's high.", candle_offset=0))
-        score += 1.5
+        if prior_down and near_support:
+            score += 1.5
 
     if current_bearish and previous_bullish and current.open > previous.close and current.close < previous.open:
         patterns.append(PatternHint(name="Bearish engulfing", bias="bearish", strength=82, meaning="Sellers fully covered the previous bullish body.", confirmation="Prefer a close below this candle's low.", candle_offset=0))
-        score -= 1.5
+        if prior_up and near_resistance:
+            score -= 1.5
 
     if lower_wick > body * 2 and upper_wick < body and body / candle_range < 0.45:
         patterns.append(PatternHint(name="Hammer", bias="bullish", strength=68, meaning="Lower prices were rejected before the candle closed.", confirmation="Wait for the next candle to break the hammer high.", candle_offset=0))
-        score += 1.0
+        if prior_down and near_support:
+            score += 1.0
 
     if upper_wick > body * 2 and lower_wick < body and body / candle_range < 0.45:
         patterns.append(PatternHint(name="Shooting star", bias="bearish", strength=68, meaning="Higher prices were rejected before the candle closed.", confirmation="Wait for the next candle to break the star low.", candle_offset=0))
-        score -= 1.0
+        if prior_up and near_resistance:
+            score -= 1.0
 
     if body / candle_range < 0.1:
         patterns.append(PatternHint(name="Doji", bias="neutral", strength=45, meaning="Buyers and sellers finished near balance.", confirmation="Do not predict direction until price breaks the doji range.", candle_offset=0))
 
     if before.close < before.open and previous.close < previous.open and current_bullish and current.close > previous.open:
         patterns.append(PatternHint(name="Three-candle bullish reversal", bias="bullish", strength=72, meaning="Selling pressure weakened and buyers reclaimed the prior body.", confirmation="Confirm with follow-through above the formation high.", candle_offset=0))
-        score += 1.0
+        if near_support:
+            score += 1.0
 
     if before.close > before.open and previous.close > previous.open and current_bearish and current.close < previous.open:
         patterns.append(PatternHint(name="Three-candle bearish reversal", bias="bearish", strength=72, meaning="Buying pressure weakened and sellers reclaimed the prior body.", confirmation="Confirm with follow-through below the formation low.", candle_offset=0))
-        score -= 1.0
+        if near_resistance:
+            score -= 1.0
 
     return patterns, score
 
@@ -82,10 +106,23 @@ def _finite(value: float | int | None) -> float | None:
     return float(value)
 
 
-def _news_score(news: NewsSentiment | None) -> float:
+def _apply_session_quality(score: float, alignment: str, adjustment: float) -> float:
+    """Change conviction without ever introducing a bullish/bearish bias."""
+    if score == 0:
+        return score
+    magnitude = abs(adjustment)
+    if alignment == "aligned":
+        return score + math.copysign(magnitude, score)
+    return score - math.copysign(min(magnitude, abs(score)), score)
+
+
+def _news_score(news: NewsSentiment | None, market: Market) -> float:
     if not news or news.articles_analyzed == 0:
         return 0.0
-    return max(-1.5, min(1.5, news.score * 0.75))
+    adjustment = max(-1.5, min(1.5, news.score * 0.75))
+    if market.category == "forex" and market.code.startswith("USD"):
+        adjustment *= -1
+    return adjustment
 
 
 def _contract_units(market: Market) -> float:
@@ -184,7 +221,7 @@ def summarize_timeframe(frame: pd.DataFrame, interval: str, period: str) -> Time
     )
 
 
-def _build_feature_map(latest: pd.Series, news: NewsSentiment | None, pattern_score: float, score: float) -> dict[str, float]:
+def _build_feature_map(latest: pd.Series, news: NewsSentiment | None, pattern_score: float, score: float, market: Market, interval: str) -> dict[str, float]:
     close = float(latest.close)
     ema_9 = float(latest.ema_9)
     ema_21 = float(latest.ema_21)
@@ -207,8 +244,88 @@ def _build_feature_map(latest: pd.Series, news: NewsSentiment | None, pattern_sc
             ("news_confidence", news_confidence),
             ("pattern_score", pattern_score / 4.0),
             ("technical_score", score / 6.0),
+            (f"market:{market.code}", 1.0),
+            (f"interval:{interval}", 1.0),
         ]
     )
+
+
+def _directional_pattern_score(signal: Signal) -> bool:
+    pattern_score = float((signal.features or {}).get("pattern_score", 0.0))
+    return pattern_score > 0 if signal.direction == "bullish" else pattern_score < 0
+
+
+def _directional_rsi(signal: Signal) -> bool:
+    rsi = signal.indicators.get("rsi")
+    if rsi is None:
+        return False
+    value = float(rsi)
+    return 40 <= value <= 70 if signal.direction == "bullish" else 30 <= value <= 60
+
+
+def trade_candidate_tier(signal: Signal) -> str | None:
+    """Classify a safe, direction-aware setup for alerts and the dashboard."""
+    if signal.market.code not in FOCUS_MARKETS or signal.direction == "neutral" or not signal.risk:
+        return None
+    features = signal.features or {}
+    max_atr_ratio = 0.015 if signal.market.category == "metal" else 0.002
+    if float(features.get("atr_ratio", float("inf"))) > max_atr_ratio:
+        return None
+    if signal.session is None or signal.session.alignment != "aligned":
+        return None
+    if not set(signal.session.active_sessions).intersection(signal.session.preferred_sessions):
+        return None
+    selected = next(
+        (
+            evaluation for evaluation in (getattr(signal, "strategy_evaluations", None) or [])
+            if evaluation.name == getattr(signal, "selected_strategy", None) and evaluation.direction == signal.direction
+        ),
+        None,
+    )
+    if selected:
+        if selected.status == "entry_ready":
+            if (
+                getattr(signal, "historical_edge", None)
+                and signal.historical_edge.sufficient_evidence
+                and signal.historical_edge.expectancy_r <= 0
+            ):
+                return "watchlist"
+            return "entry_ready"
+        if selected.status == "watchlist":
+            return "watchlist"
+        return None
+
+    # Backward-compatible gate for persisted/legacy signals without strategy metadata.
+    if abs(signal.score) < 2.0:
+        return None
+    if not _directional_pattern_score(signal):
+        return None
+    directional_patterns = [pattern for pattern in signal.patterns if pattern.bias == signal.direction]
+    if not directional_patterns or max(pattern.strength for pattern in directional_patterns) < 60:
+        return None
+    if not _directional_rsi(signal):
+        return None
+    close = signal.indicators.get("close")
+    ema_9 = signal.indicators.get("ema_9")
+    ema_21 = signal.indicators.get("ema_21")
+    sma_50 = signal.indicators.get("sma_50")
+    if None in (close, ema_9, ema_21, sma_50):
+        return None
+    trend_aligned = (
+        signal.direction == "bullish" and float(close) > float(sma_50) and float(ema_9) > float(ema_21)
+    ) or (
+        signal.direction == "bearish" and float(close) < float(sma_50) and float(ema_9) < float(ema_21)
+    )
+    if not trend_aligned:
+        return None
+    strongest_pattern = max(pattern.strength for pattern in directional_patterns)
+    if abs(signal.score) >= 3.0 and strongest_pattern >= 65:
+        return "entry_ready"
+    return "watchlist"
+
+
+def is_focused_trade_candidate(signal: Signal) -> bool:
+    return trade_candidate_tier(signal) is not None
 
 
 def analyze_market(
@@ -291,7 +408,7 @@ def analyze_market(
             score -= 0.45
         reasons.append(f"Lower timeframe {lower_context.interval}: {lower_context.direction} timing")
 
-    news_adjustment = _news_score(news)
+    news_adjustment = _news_score(news, market)
     if news_adjustment:
         score += news_adjustment
         reasons.append(f"Market news sentiment is {news.sentiment} with a {news_adjustment:+.2f} score adjustment")
@@ -303,7 +420,49 @@ def analyze_market(
     if pd.isna(latest.atr) or latest.atr == 0:
         warnings.append("ATR is unavailable, so risk levels are omitted")
 
-    feature_map = _build_feature_map(latest, news, pattern_score, score)
+    regime = classify_regime(data)
+    session_signal = recommend_session_entry(market)
+    factors = build_factor_breakdown(
+        technical_score=score,
+        pattern_score=pattern_score,
+        rsi=float(latest.rsi) if pd.notna(latest.rsi) else None,
+        regime=regime,
+        session_aligned=session_signal.alignment == "aligned",
+        news=news,
+    )
+    strategy_evaluations = evaluate_strategies(data, market, regime, factors)
+    base_direction = "bullish" if score > 0 else "bearish" if score < 0 else "neutral"
+    selected_evaluation = next(
+        (
+            evaluation for evaluation in strategy_evaluations
+            if evaluation.status != "inactive"
+            and evaluation.direction != "neutral"
+            and (base_direction == "neutral" or evaluation.direction == base_direction)
+        ),
+        None,
+    )
+    if selected_evaluation:
+        strategy_adjustment = min(1.5, selected_evaluation.score / 50.0)
+        score += strategy_adjustment if selected_evaluation.direction == "bullish" else -strategy_adjustment
+        reasons.append(
+            f"{selected_evaluation.name.replace('_', ' ').title()} qualified at {selected_evaluation.score:.0f}/100"
+        )
+    edge_direction = selected_evaluation.direction if selected_evaluation else base_direction
+    historical_edge = rolling_performance_edge(
+        market.code,
+        edge_direction,
+        strategy=selected_evaluation.name if selected_evaluation else None,
+        regime=regime.trend,
+    )
+    if historical_edge.sufficient_evidence and edge_direction != "neutral":
+        direction_sign = 1.0 if edge_direction == "bullish" else -1.0
+        score += direction_sign * historical_edge.score_adjustment
+        reasons.append(
+            f"Recent expectancy is {historical_edge.expectancy_r:+.2f}R across "
+            f"{historical_edge.samples} comparable resolved signals"
+        )
+
+    feature_map = _build_feature_map(latest, news, pattern_score, score, market, interval)
     model_signal = learner.summary(feature_map) if learner else None
     if model_signal:
         model_adjustment = model_signal.adjustment
@@ -312,9 +471,8 @@ def analyze_market(
     else:
         model_adjustment = 0.0
 
-    session_signal = recommend_session_entry(market)
     if settings.enable_session_suggestions:
-        score += session_signal.score_adjustment
+        score = _apply_session_quality(score, session_signal.alignment, session_signal.score_adjustment)
         if session_signal.alignment == "aligned":
             reasons.append(session_signal.suggestion)
         else:
@@ -323,6 +481,12 @@ def analyze_market(
     if abs(score) < 1.25:
         direction = "neutral"
         strategy = "Wait for confirmation"
+    elif selected_evaluation and score > 0:
+        direction = "bullish"
+        strategy = selected_evaluation.name.replace("_", " ").title()
+    elif selected_evaluation and score < 0:
+        direction = "bearish"
+        strategy = selected_evaluation.name.replace("_", " ").title()
     elif score > 0:
         direction = "bullish"
         strategy = "Trend-following long setup with candlestick confirmation"
@@ -330,7 +494,8 @@ def analyze_market(
         direction = "bearish"
         strategy = "Trend-following short setup with candlestick confirmation"
 
-    confidence = min(95, max(5, int(50 + abs(score) * 10)))
+    raw_confidence = min(85, max(5, int(50 + abs(score) * 8)))
+    confidence = calibrated_confidence(market.code, interval, direction, raw_confidence)
     if direction == "neutral":
         confidence = min(confidence, 55)
 
@@ -338,36 +503,64 @@ def analyze_market(
     atr = _finite(latest.atr)
     close = float(latest.close)
     if atr and direction != "neutral":
-        stop_distance = atr * 1.5
-        target_distance = atr * 2.25
+        execution_bps = settings.execution_cost_bps_metal if market.category == "metal" else settings.execution_cost_bps_forex
+        execution_cost = close * max(execution_bps, 0.0) / 10_000.0
+        recent = data.iloc[-20:]
+        selected_name = selected_evaluation.name if selected_evaluation else None
         if direction == "bullish":
-            stop_loss = close - stop_distance
-            take_profit_1 = close + target_distance
-            take_profit_2 = close + target_distance * 1.6
+            entry = close + execution_cost
+            if selected_name == "volatility_breakout":
+                stop_loss = min(entry - atr, float(recent.iloc[:-1].high.max()) - atr * 0.25)
+            else:
+                stop_loss = min(entry - (atr * 1.5), float(recent.low.min()) - (atr * 0.1))
+            stop_distance = entry - stop_loss
+            if selected_name == "range_reversion":
+                midpoint = (float(recent.low.min()) + float(recent.high.max())) / 2
+                take_profit_1 = max(entry + stop_distance, midpoint)
+                take_profit_2 = max(take_profit_1 + stop_distance * 0.5, float(recent.high.max()))
+            else:
+                take_profit_1 = entry + (stop_distance * 1.5)
+                take_profit_2 = entry + (stop_distance * 2.4)
         else:
-            stop_loss = close + stop_distance
-            take_profit_1 = close - target_distance
-            take_profit_2 = close - target_distance * 1.6
-        risk_percent = max(settings.risk_percent, 0.0)
+            entry = close - execution_cost
+            if selected_name == "volatility_breakout":
+                stop_loss = max(entry + atr, float(recent.iloc[:-1].low.min()) + atr * 0.25)
+            else:
+                stop_loss = max(entry + (atr * 1.5), float(recent.high.max()) + (atr * 0.1))
+            stop_distance = stop_loss - entry
+            if selected_name == "range_reversion":
+                midpoint = (float(recent.low.min()) + float(recent.high.max())) / 2
+                take_profit_1 = min(entry - stop_distance, midpoint)
+                take_profit_2 = min(take_profit_1 - stop_distance * 0.5, float(recent.low.min()))
+            else:
+                take_profit_1 = entry - (stop_distance * 1.5)
+                take_profit_2 = entry - (stop_distance * 2.4)
+        risk_percent = adjusted_risk_fraction(
+            max(settings.risk_percent, 0.0),
+            volatility=regime.volatility,
+            setup_status=selected_evaluation.status if selected_evaluation else None,
+        )
         risk_amount = max(settings.risk_account_balance, 0.0) * risk_percent / 100.0
         risk = RiskPlan(
-            entry=round(close, 5),
+            entry=round(entry, 5),
             stop_loss=round(stop_loss, 5),
             take_profit_1=round(take_profit_1, 5),
             take_profit_2=round(take_profit_2, 5),
-            risk_reward=1.5,
+            risk_reward=round(abs(take_profit_1 - entry) / max(stop_distance, 1e-12), 2),
             risk_percent=round(risk_percent, 2),
             risk_amount=round(risk_amount, 2),
-            suggested_lot_size=_suggested_lot_size(market, close, stop_loss, risk_amount),
+            suggested_lot_size=_suggested_lot_size(market, entry, stop_loss, risk_amount),
         )
+        warnings.append(f"Entry includes an estimated {execution_bps:.1f} bps execution cost; verify live broker pricing")
         if risk.suggested_lot_size == 0 and market.category == "forex" and market.code[-3:] != settings.account_currency:
             warnings.append(
                 f"Lot size omitted because {market.code[-3:]} to {settings.account_currency} conversion is unavailable"
             )
 
-    timestamp = data.index[-1]
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize(timezone.utc)
+    candle_timestamp = data.index[-1]
+    if candle_timestamp.tzinfo is None:
+        candle_timestamp = candle_timestamp.tz_localize(timezone.utc)
+    timestamp = candle_timestamp + interval_duration(interval)
 
     return Signal(
         market=market,
@@ -399,10 +592,15 @@ def analyze_market(
         news=news,
         model=model_signal,
         patterns=patterns,
+        regime=regime,
+        factors=factors,
+        historical_edge=historical_edge,
+        strategy_evaluations=strategy_evaluations,
+        selected_strategy=selected_evaluation.name if selected_evaluation else None,
         session=session_signal,
         risk=risk,
         last_candle=Candle(
-            time=timestamp.isoformat(),
+            time=candle_timestamp.isoformat(),
             open=float(latest.open),
             high=float(latest.high),
             low=float(latest.low),

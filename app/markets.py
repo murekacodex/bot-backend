@@ -24,7 +24,7 @@ MARKETS: dict[str, Market] = {
         name="US Dollar / Japanese Yen",
         category="forex",
         session="forex",
-        preferred_sessions=["asia", "london"],
+        preferred_sessions=["asia", "new_york"],
     ),
     "USDCHF": Market(
         code="USDCHF",
