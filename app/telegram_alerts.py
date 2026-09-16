@@ -233,22 +233,26 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
     if risk is None:
         return ""
     heading = "🚨 ENTRY READY" if tier == "entry_ready" else "👀 WATCHLIST"
+    direction_icon = "🟢" if signal.direction == "bullish" else "🔴"
     strategy = getattr(signal, "strategy", None) or "Multi-factor setup"
     regime = getattr(signal, "regime", None)
     edge = getattr(signal, "historical_edge", None)
     sessions = " / ".join(part.replace("_", " ").title() for part in signal.session.active_sessions) if signal.session else "Unknown"
     return "\n".join(
         (
-            f"{heading}: {signal.market.code}",
-            f"Direction: {signal.direction.upper()}",
+            f"{heading}",
+            f"{direction_icon} {signal.market.code} · {signal.direction.upper()} · {signal.interval.upper()}",
+            "",
+            "━━━━━━━━ TRADE LEVELS ━━━━━━━━",
+            f"➡️  ENTRY   {risk.entry}",
+            f"🛑  STOP LOSS   {risk.stop_loss}",
+            f"🎯  TAKE PROFIT 1   {risk.take_profit_1}",
+            f"🎯  TAKE PROFIT 2   {risk.take_profit_2}",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
             f"Strategy: {strategy}",
             f"Regime: {regime.trend.title() if regime else 'Unknown'} / {regime.volatility.title() if regime else 'Unknown'} volatility",
-            f"Timeframe: {signal.interval}",
             f"Session: {sessions}",
-            f"Entry: {risk.entry}",
-            f"Stop loss: {risk.stop_loss}",
-            f"Take profit 1: {risk.take_profit_1}",
-            f"Take profit 2: {risk.take_profit_2}",
             f"Confidence: {signal.confidence}%",
             f"Score: {signal.score}",
             (
@@ -258,6 +262,26 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
             ),
             "Confirm live price and spread with your broker before entering.",
         )
+    )
+
+
+def _copy_keyboard(signal: Signal) -> str:
+    risk = signal.risk
+    if risk is None:
+        return ""
+    return json.dumps(
+        {
+            "inline_keyboard": [
+                [
+                    {"text": "📋 Copy Entry", "copy_text": {"text": str(risk.entry)}},
+                    {"text": "📋 Copy Stop Loss", "copy_text": {"text": str(risk.stop_loss)}},
+                ],
+                [
+                    {"text": "📋 Copy TP1", "copy_text": {"text": str(risk.take_profit_1)}},
+                    {"text": "📋 Copy TP2", "copy_text": {"text": str(risk.take_profit_2)}},
+                ],
+            ]
+        }
     )
 
 
@@ -281,7 +305,14 @@ def send_viable_entry_alert(signal: Signal, tier: str = "entry_ready") -> bool:
         delivered = False
         delivered_messages = []
         for chat_id in chat_ids:
-            result = _api_call("sendMessage", {"chat_id": chat_id, "text": _message(signal, tier=tier)})
+            result = _api_call(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": _message(signal, tier=tier),
+                    "reply_markup": _copy_keyboard(signal),
+                },
+            )
             if result.get("ok"):
                 delivered = True
                 message_id = (result.get("result") or {}).get("message_id")

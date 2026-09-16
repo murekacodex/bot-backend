@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timezone
 
 from app.analysis import analyze_market, trade_candidate_tier
-from app.config import get_settings
+from app.config import ANALYSIS_TIMEFRAMES, get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import fetch_candles
 from app.markets import MARKETS
@@ -26,42 +26,43 @@ def run_once() -> list[dict]:
         if settings.filter_closed_markets and not market.is_open:
             continue
         try:
-            frame = fetch_candles(market, interval=settings.default_interval, period=settings.default_period)
-            current_close = float(frame.iloc[-1]["close"])
-            current_time = frame.index[-1].to_pydatetime()
-            if current_time.tzinfo is None:
-                current_time = current_time.replace(tzinfo=timezone.utc)
-            else:
-                current_time = current_time.astimezone(timezone.utc)
             market_news = fetch_news_sentiment(market) if settings.enable_news_analysis else None
-            learner.update_from_price(market.code, current_close, now=current_time)
-            signal = analyze_market(
-                market,
-                frame,
-                interval=settings.default_interval,
-                period=settings.default_period,
-                news=market_news,
-                learner=learner,
-            )
-            learner.register_prediction(
-                market_code=market.code,
-                direction=signal.direction,
-                entry_price=signal.risk.entry if signal.risk else signal.last_candle.close,
-                features=signal.features or {},
-                interval=settings.default_interval,
-                period=settings.default_period,
-                timestamp=datetime.fromisoformat(signal.timestamp),
-            )
-            record_signal(signal, source="worker")
-            analyzed_signals.append(signal)
-            tier = trade_candidate_tier(signal)
-            if tier:
-                candidate_count += 1
-                active_alert_keys.add(_alert_key(signal, tier=tier))
-                send_viable_entry_alert(signal, tier=tier)
-            signals.append(signal.model_dump())
         except Exception as exc:
-            signals.append({"market": market.code, "error": str(exc)})
+            market_news = None
+            signals.append({"market": market.code, "source": "news", "error": str(exc)})
+        for interval, period in ANALYSIS_TIMEFRAMES.items():
+            try:
+                frame = fetch_candles(market, interval=interval, period=period)
+                current_close = float(frame.iloc[-1]["close"])
+                current_time = frame.index[-1].to_pydatetime()
+                if current_time.tzinfo is None:
+                    current_time = current_time.replace(tzinfo=timezone.utc)
+                else:
+                    current_time = current_time.astimezone(timezone.utc)
+                learner.update_from_price(market.code, current_close, now=current_time)
+                signal = analyze_market(
+                    market, frame, interval=interval, period=period,
+                    news=market_news, learner=learner,
+                )
+                learner.register_prediction(
+                    market_code=market.code,
+                    direction=signal.direction,
+                    entry_price=signal.risk.entry if signal.risk else signal.last_candle.close,
+                    features=signal.features or {},
+                    interval=interval,
+                    period=period,
+                    timestamp=datetime.fromisoformat(signal.timestamp),
+                )
+                record_signal(signal, source="worker")
+                analyzed_signals.append(signal)
+                tier = trade_candidate_tier(signal)
+                if tier:
+                    candidate_count += 1
+                    active_alert_keys.add(_alert_key(signal, tier=tier))
+                    send_viable_entry_alert(signal, tier=tier)
+                signals.append(signal.model_dump())
+            except Exception as exc:
+                signals.append({"market": market.code, "interval": interval, "error": str(exc)})
     resolve_signal_outcomes()
     remove_outdated_alerts(active_alert_keys)
     if analyzed_signals and candidate_count == 0:

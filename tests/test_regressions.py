@@ -20,6 +20,7 @@ from app.analysis import (
     _suggested_lot_size,
     _take_profit_levels,
 )
+from app.config import ANALYSIS_TIMEFRAMES
 from app.learning import AdaptiveSignalModel
 from app.main import validate_timeframe
 from app.market_data import completed_candles
@@ -32,11 +33,14 @@ from app.research import monte_carlo, performance_metrics
 from app.session import market_is_open
 from app.signal_journal import _resolve_entry, signal_outcome_stats
 from app.signal_journal import rolling_performance_edge
-from app.telegram_alerts import _alert_key, _message, _password_matches, remove_outdated_alerts
+from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, remove_outdated_alerts
 from app.telegram_assistant import _completed_text
 
 
 class TimeframeValidationTests(unittest.TestCase):
+    def test_background_scan_covers_every_dashboard_timeframe(self):
+        self.assertEqual(set(ANALYSIS_TIMEFRAMES), {"1m", "15m", "30m", "1h", "4h", "1d"})
+
     def test_allows_one_minute_history_supported_by_provider(self):
         validate_timeframe("1m", "5d")
 
@@ -126,9 +130,14 @@ class TelegramAlertTests(unittest.TestCase):
             risk=RiskPlan(entry=1.35, stop_loss=1.34, take_profit_1=1.365, take_profit_2=1.374, risk_reward=1.5, risk_percent=1, risk_amount=10, suggested_lot_size=.01),
             session=SessionSignal(current_session="new_york", active_sessions=["new_york"], preferred_sessions=["new_york"], alignment="aligned", suggestion="Entry", score_adjustment=.4, confidence=80, reasons=[]),
         )
-        self.assertIn("ENTRY READY: USDCAD", _message(signal))
-        self.assertIn("Stop loss: 1.34", _message(signal))
+        self.assertIn("🟢 USDCAD · BULLISH · 1H", _message(signal))
+        self.assertIn("🛑  STOP LOSS   1.34", _message(signal))
+        self.assertIn("🎯  TAKE PROFIT 1   1.365", _message(signal))
         self.assertEqual(_alert_key(signal), "entry_ready:USDCAD:1h:bullish:2026-01-01T11:00:00+00:00")
+        keyboard = json.loads(_copy_keyboard(signal))
+        self.assertEqual(keyboard["inline_keyboard"][0][1]["copy_text"]["text"], "1.34")
+        self.assertEqual(keyboard["inline_keyboard"][1][0]["copy_text"]["text"], "1.365")
+        self.assertEqual(keyboard["inline_keyboard"][1][1]["copy_text"]["text"], "1.374")
 
     def test_extracts_assistant_output_text(self):
         response = {

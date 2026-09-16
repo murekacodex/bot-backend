@@ -4,6 +4,16 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+ANALYSIS_TIMEFRAMES = {
+    "1m": "1d",
+    "15m": "5d",
+    "30m": "5d",
+    "1h": "5d",
+    "4h": "1mo",
+    "1d": "3mo",
+}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

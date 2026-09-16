@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier, summarize_timeframe
 from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
-from app.config import get_settings
+from app.config import ANALYSIS_TIMEFRAMES, get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import dataframe_to_candles, fetch_candles
 from app.macro import assess_macro
@@ -172,51 +172,59 @@ def timeframe_contexts(market: Market, interval: str) -> tuple[dict, list[str]]:
 def signals(
     interval: str = Query(default=settings.default_interval),
     period: str = Query(default=settings.default_period),
+    all_timeframes: bool = Query(default=False),
     category: str | None = Query(default=None, pattern="^(forex|metal)$"),
     include_news: bool = Query(default=settings.enable_news_analysis),
     include_closed: bool = Query(default=False),
     _: UserPublic = Depends(current_user),
 ) -> list[Signal]:
-    validate_timeframe(interval, period)
+    if not all_timeframes:
+        validate_timeframe(interval, period)
     output: list[Signal] = []
     errors: list[str] = []
     analyzed_count = 0
 
+    selections = list(ANALYSIS_TIMEFRAMES.items()) if all_timeframes else [(interval, period)]
     for market in markets(include_closed=include_closed):
         if market.code not in FOCUS_MARKETS:
             continue
         if category and market.category != category:
             continue
         try:
-            frame = fetch_candles(market, interval=interval, period=period)
             market_news = fetch_news_sentiment(market) if include_news else None
-            contexts, timeframe_warnings = timeframe_contexts(market, interval)
-            signal = analyze_market(
-                market,
-                frame,
-                interval=interval,
-                period=period,
-                news=market_news,
-                learner=learner,
-                timeframes=contexts,
-            )
-            signal.warnings.extend(timeframe_warnings)
-            analyzed_count += 1
-            learner.register_prediction(
-                market_code=market.code,
-                direction=signal.direction,
-                entry_price=signal.risk.entry if signal.risk else signal.last_candle.close,
-                features=signal.features or {},
-                interval=interval,
-                period=period,
-                timestamp=datetime.fromisoformat(signal.timestamp),
-            )
-            tier = trade_candidate_tier(signal)
-            if tier:
-                output.append(signal)
-                send_viable_entry_alert(signal, tier=tier)
-        except Exception as exc:  # Keep one bad data source from hiding other signals.
-            errors.append(f"{market.code}: {exc}")
+        except Exception as exc:
+            market_news = None
+            errors.append(f"{market.code} news: {exc}")
+        for selected_interval, selected_period in selections:
+            try:
+                frame = fetch_candles(market, interval=selected_interval, period=selected_period)
+                contexts, timeframe_warnings = timeframe_contexts(market, selected_interval)
+                signal = analyze_market(
+                    market,
+                    frame,
+                    interval=selected_interval,
+                    period=selected_period,
+                    news=market_news,
+                    learner=learner,
+                    timeframes=contexts,
+                )
+                signal.warnings.extend(timeframe_warnings)
+                analyzed_count += 1
+                learner.register_prediction(
+                    market_code=market.code,
+                    direction=signal.direction,
+                    entry_price=signal.risk.entry if signal.risk else signal.last_candle.close,
+                    features=signal.features or {},
+                    interval=selected_interval,
+                    period=selected_period,
+                    timestamp=datetime.fromisoformat(signal.timestamp),
+                )
+                tier = trade_candidate_tier(signal)
+                if tier:
+                    output.append(signal)
+                    send_viable_entry_alert(signal, tier=tier)
+            except Exception as exc:  # Keep one bad timeframe from hiding other signals.
+                errors.append(f"{market.code} {selected_interval}: {exc}")
 
     if analyzed_count == 0 and errors:
         raise HTTPException(status_code=502, detail={"message": "No signals could be generated", "errors": errors})
