@@ -172,6 +172,62 @@ def _alert_key(signal: Signal, tier: str = "entry_ready") -> str:
     return ":".join((tier, signal.market.code, signal.interval, signal.direction, signal.timestamp))
 
 
+def _alert_scope(signal: Signal) -> str:
+    return f"{signal.market.code}:{signal.interval}"
+
+
+def _read_alert_state(path: Path) -> dict:
+    try:
+        state = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    state["sent"] = list(state.get("sent") or [])
+    state["active_alerts"] = dict(state.get("active_alerts") or {})
+    return state
+
+
+def _delete_alert_messages(messages: list[dict]) -> None:
+    for message in messages:
+        chat_id = message.get("chat_id")
+        message_id = message.get("message_id")
+        if chat_id is None or message_id is None:
+            continue
+        try:
+            _api_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        except Exception as exc:
+            print(json.dumps({"telegram_alert_delete_error": str(exc)}), flush=True)
+
+
+def remove_outdated_alerts(active_keys: set[str]) -> int:
+    """Delete bot-owned trade alerts that are no longer viable in the current scan."""
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        return 0
+    state_path = Path(settings.telegram_alert_state_path)
+    with file_lock(state_path):
+        state = _read_alert_state(state_path)
+        outdated = [
+            (scope, alert) for scope, alert in state["active_alerts"].items()
+            if str(alert.get("key")) not in active_keys
+        ]
+        market_updates = list(state.get("market_update_messages") or []) if active_keys else []
+    for _, alert in outdated:
+        _delete_alert_messages(list(alert.get("messages") or []))
+    _delete_alert_messages(market_updates)
+    if not outdated and not market_updates:
+        return 0
+    with file_lock(state_path):
+        state = _read_alert_state(state_path)
+        for scope, alert in outdated:
+            current = state["active_alerts"].get(scope)
+            if current and current.get("key") == alert.get("key"):
+                state["active_alerts"].pop(scope, None)
+        if market_updates:
+            state["market_update_messages"] = []
+        atomic_write_json(state_path, state)
+    return len(outdated)
+
+
 def _message(signal: Signal, tier: str = "entry_ready") -> str:
     risk = signal.risk
     if risk is None:
@@ -212,13 +268,10 @@ def send_viable_entry_alert(signal: Signal, tier: str = "entry_ready") -> bool:
 
     state_path = Path(settings.telegram_alert_state_path)
     key = _alert_key(signal, tier=tier)
+    scope = _alert_scope(signal)
     with file_lock(state_path):
-        try:
-            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
-        except (OSError, json.JSONDecodeError):
-            state = {"sent": []}
-        sent = list(state.get("sent") or [])
-        if key in sent:
+        state = _read_alert_state(state_path)
+        if key in state["sent"] or state["active_alerts"].get(scope, {}).get("key") == key:
             return False
 
     try:
@@ -226,9 +279,14 @@ def send_viable_entry_alert(signal: Signal, tier: str = "entry_ready") -> bool:
         if not chat_ids:
             return False
         delivered = False
+        delivered_messages = []
         for chat_id in chat_ids:
             result = _api_call("sendMessage", {"chat_id": chat_id, "text": _message(signal, tier=tier)})
-            delivered = delivered or bool(result.get("ok"))
+            if result.get("ok"):
+                delivered = True
+                message_id = (result.get("result") or {}).get("message_id")
+                if message_id is not None:
+                    delivered_messages.append({"chat_id": chat_id, "message_id": message_id})
         if not delivered:
             return False
     except Exception as exc:
@@ -236,14 +294,21 @@ def send_viable_entry_alert(signal: Signal, tier: str = "entry_ready") -> bool:
         return False
 
     with file_lock(state_path):
-        try:
-            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
-        except (OSError, json.JSONDecodeError):
-            state = {"sent": []}
-        sent = list(state.get("sent") or [])
+        state = _read_alert_state(state_path)
+        previous = state["active_alerts"].get(scope)
+        sent = state["sent"]
         if key not in sent:
             sent.append(key)
-        atomic_write_json(state_path, {"sent": sent[-500:]})
+        state["sent"] = sent[-500:]
+        state["active_alerts"][scope] = {
+            "key": key,
+            "market_code": signal.market.code,
+            "interval": signal.interval,
+            "messages": delivered_messages,
+        }
+        atomic_write_json(state_path, state)
+    if previous and previous.get("key") != key:
+        _delete_alert_messages(list(previous.get("messages") or []))
     return True
 
 
@@ -254,10 +319,7 @@ def send_market_update(signals: list[Signal]) -> bool:
     state_path = Path(settings.telegram_alert_state_path)
     now = datetime.now(timezone.utc)
     with file_lock(state_path):
-        try:
-            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
-        except (OSError, json.JSONDecodeError):
-            state = {"sent": []}
+        state = _read_alert_state(state_path)
         last_value = state.get("last_market_update")
         if last_value:
             try:
@@ -280,9 +342,14 @@ def send_market_update(signals: list[Signal]) -> bool:
     try:
         chat_ids = _authorized_chat_ids()
         delivered = False
+        delivered_messages = []
         for chat_id in chat_ids:
             result = _api_call("sendMessage", {"chat_id": chat_id, "text": text})
-            delivered = delivered or bool(result.get("ok"))
+            if result.get("ok"):
+                delivered = True
+                message_id = (result.get("result") or {}).get("message_id")
+                if message_id is not None:
+                    delivered_messages.append({"chat_id": chat_id, "message_id": message_id})
         if not delivered:
             return False
     except Exception as exc:
@@ -290,10 +357,10 @@ def send_market_update(signals: list[Signal]) -> bool:
         return False
 
     with file_lock(state_path):
-        try:
-            state = json.loads(state_path.read_text()) if state_path.exists() else {"sent": []}
-        except (OSError, json.JSONDecodeError):
-            state = {"sent": []}
+        state = _read_alert_state(state_path)
+        previous_messages = list(state.get("market_update_messages") or [])
         state["last_market_update"] = now.isoformat()
+        state["market_update_messages"] = delivered_messages
         atomic_write_json(state_path, state)
+    _delete_alert_messages(previous_messages)
     return True

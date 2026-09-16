@@ -76,6 +76,7 @@ class SignalOutcomeStats(BaseModel):
     failures: int
     accuracy: float | None = None
     by_market: dict[str, dict[str, int | float | None]]
+    best_market_24h: dict[str, str | int | float] | None = None
 
 
 class TimeframeContext(BaseModel):

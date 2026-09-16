@@ -106,6 +106,38 @@ def _finite(value: float | int | None) -> float | None:
     return float(value)
 
 
+def _capped_stop_loss(direction: str, entry: float, raw_stop: float, max_distance: float) -> float:
+    if direction == "bullish":
+        return max(raw_stop, entry - max_distance)
+    return min(raw_stop, entry + max_distance)
+
+
+def _take_profit_levels(
+    direction: str,
+    entry: float,
+    stop_distance: float,
+    tp1_r: float,
+    tp2_r: float,
+    strategy: str | None,
+    recent_low: float,
+    recent_high: float,
+) -> tuple[float, float]:
+    sign = 1 if direction == "bullish" else -1
+    default_tp1 = entry + sign * stop_distance * tp1_r
+    default_tp2 = entry + sign * stop_distance * tp2_r
+    if strategy != "range_reversion":
+        return default_tp1, default_tp2
+
+    midpoint = (recent_low + recent_high) / 2
+    if direction == "bullish":
+        tp1 = min(default_tp1, midpoint) if midpoint > entry else default_tp1
+        tp2 = min(default_tp2, recent_high) if recent_high > tp1 else default_tp2
+    else:
+        tp1 = max(default_tp1, midpoint) if midpoint < entry else default_tp1
+        tp2 = max(default_tp2, recent_low) if recent_low < tp1 else default_tp2
+    return tp1, tp2
+
+
 def _apply_session_quality(score: float, alignment: str, adjustment: float) -> float:
     """Change conviction without ever introducing a bullish/bearish bias."""
     if score == 0:
@@ -507,34 +539,31 @@ def analyze_market(
         execution_cost = close * max(execution_bps, 0.0) / 10_000.0
         recent = data.iloc[-20:]
         selected_name = selected_evaluation.name if selected_evaluation else None
+        max_stop_distance = atr * max(settings.max_stop_atr, 1.0)
+        tp1_r = max(settings.take_profit_1_r, 0.1)
+        tp2_r = max(settings.take_profit_2_r, tp1_r)
+        recent_low = float(recent.low.min())
+        recent_high = float(recent.high.max())
         if direction == "bullish":
             entry = close + execution_cost
             if selected_name == "volatility_breakout":
-                stop_loss = min(entry - atr, float(recent.iloc[:-1].high.max()) - atr * 0.25)
+                raw_stop = min(entry - atr, float(recent.iloc[:-1].high.max()) - atr * 0.25)
             else:
-                stop_loss = min(entry - (atr * 1.5), float(recent.low.min()) - (atr * 0.1))
+                raw_stop = min(entry - (atr * 1.5), recent_low - (atr * 0.1))
+            stop_loss = _capped_stop_loss(direction, entry, raw_stop, max_stop_distance)
             stop_distance = entry - stop_loss
-            if selected_name == "range_reversion":
-                midpoint = (float(recent.low.min()) + float(recent.high.max())) / 2
-                take_profit_1 = max(entry + stop_distance, midpoint)
-                take_profit_2 = max(take_profit_1 + stop_distance * 0.5, float(recent.high.max()))
-            else:
-                take_profit_1 = entry + (stop_distance * 1.5)
-                take_profit_2 = entry + (stop_distance * 2.4)
         else:
             entry = close - execution_cost
             if selected_name == "volatility_breakout":
-                stop_loss = max(entry + atr, float(recent.iloc[:-1].low.min()) + atr * 0.25)
+                raw_stop = max(entry + atr, float(recent.iloc[:-1].low.min()) + atr * 0.25)
             else:
-                stop_loss = max(entry + (atr * 1.5), float(recent.high.max()) + (atr * 0.1))
+                raw_stop = max(entry + (atr * 1.5), recent_high + (atr * 0.1))
+            stop_loss = _capped_stop_loss(direction, entry, raw_stop, max_stop_distance)
             stop_distance = stop_loss - entry
-            if selected_name == "range_reversion":
-                midpoint = (float(recent.low.min()) + float(recent.high.max())) / 2
-                take_profit_1 = min(entry - stop_distance, midpoint)
-                take_profit_2 = min(take_profit_1 - stop_distance * 0.5, float(recent.low.min()))
-            else:
-                take_profit_1 = entry - (stop_distance * 1.5)
-                take_profit_2 = entry - (stop_distance * 2.4)
+        take_profit_1, take_profit_2 = _take_profit_levels(
+            direction, entry, stop_distance, tp1_r, tp2_r,
+            selected_name, recent_low, recent_high,
+        )
         risk_percent = adjusted_risk_fraction(
             max(settings.risk_percent, 0.0),
             volatility=regime.volatility,

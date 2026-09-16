@@ -346,7 +346,7 @@ def resolve_signal_outcomes() -> int:
     return updated
 
 
-def signal_outcome_stats() -> SignalOutcomeStats:
+def signal_outcome_stats(now: datetime | None = None) -> SignalOutcomeStats:
     with _lock, file_lock(_state_path()):
         entries = _unique_entries(list(_read_state()["signals"]))
 
@@ -374,6 +374,41 @@ def signal_outcome_stats() -> SignalOutcomeStats:
         resolved = int(bucket["resolved"] or 0)
         bucket["accuracy"] = round(int(bucket["successes"] or 0) / resolved, 4) if resolved else None
 
+    cutoff = (now or _now()) - timedelta(hours=24)
+    recent_by_market: dict[str, dict[str, int]] = {}
+    for entry in resolved_entries:
+        outcome = entry.get("outcome", {})
+        try:
+            resolved_at = _parse_time(str(outcome.get("resolved_at")))
+        except (TypeError, ValueError):
+            continue
+        if resolved_at < cutoff:
+            continue
+        market = str(entry.get("market_code"))
+        bucket = recent_by_market.setdefault(market, {"resolved": 0, "successes": 0})
+        bucket["resolved"] += 1
+        if outcome.get("success") is True:
+            bucket["successes"] += 1
+
+    best_market_24h = None
+    if recent_by_market:
+        code, bucket = max(
+            recent_by_market.items(),
+            key=lambda item: (
+                item[1]["successes"] / max(item[1]["resolved"], 1),
+                item[1]["successes"],
+                item[1]["resolved"],
+                item[0],
+            ),
+        )
+        best_market_24h = {
+            "code": code,
+            "accuracy": round(bucket["successes"] / bucket["resolved"], 4),
+            "successes": bucket["successes"],
+            "resolved": bucket["resolved"],
+            "window_hours": 24,
+        }
+
     return SignalOutcomeStats(
         total=total,
         pending=total - len(resolved_entries),
@@ -382,4 +417,5 @@ def signal_outcome_stats() -> SignalOutcomeStats:
         failures=failures,
         accuracy=round(successes / len(resolved_entries), 4) if resolved_entries else None,
         by_market=by_market,
+        best_market_24h=best_market_24h,
     )

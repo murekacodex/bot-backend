@@ -61,6 +61,8 @@ Environment variables:
 - `AUTH_TOKEN_TTL_HOURS`: login token lifetime.
 - `RISK_ACCOUNT_BALANCE`: account balance used for suggested lot-size calculations.
 - `RISK_PERCENT`: account percentage to risk per signal.
+- `MAX_STOP_ATR`: maximum stop distance in ATR units; defaults to `2.0`.
+- `TAKE_PROFIT_1_R` / `TAKE_PROFIT_2_R`: take-profit distances as multiples of the capped stop distance; defaults to `1.0R` and `1.5R`.
 - `SIGNAL_LOG_PATH`: file path used to persist generated signal history and outcomes.
 - `SIGNAL_OUTCOME_HORIZON_HOURS`: minimum age before a logged signal can be scored.
 - `SIGNAL_OUTCOME_MIN_MOVE_PCT`: minimum realized move used to decide if a signal succeeded.

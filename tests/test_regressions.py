@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -12,10 +13,12 @@ import pandas as pd
 from app.analysis import (
     FOCUS_MARKETS,
     _apply_session_quality,
+    _capped_stop_loss,
     _detect_patterns,
     _directional_pattern_score,
     _directional_rsi,
     _suggested_lot_size,
+    _take_profit_levels,
 )
 from app.learning import AdaptiveSignalModel
 from app.main import validate_timeframe
@@ -27,9 +30,9 @@ from app.portfolio_risk import adjusted_risk_fraction, currency_exposure
 from app.regime import classify_regime
 from app.research import monte_carlo, performance_metrics
 from app.session import market_is_open
-from app.signal_journal import _resolve_entry
+from app.signal_journal import _resolve_entry, signal_outcome_stats
 from app.signal_journal import rolling_performance_edge
-from app.telegram_alerts import _alert_key, _message, _password_matches
+from app.telegram_alerts import _alert_key, _message, _password_matches, remove_outdated_alerts
 from app.telegram_assistant import _completed_text
 
 
@@ -54,6 +57,22 @@ class RiskSizingTests(unittest.TestCase):
     def test_minimum_lot_does_not_exceed_risk_budget(self):
         market = Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex")
         self.assertEqual(_suggested_lot_size(market, 1.1, 1.0, 1), 0.0)
+
+    def test_stop_distance_is_capped_at_two_atr(self):
+        self.assertEqual(_capped_stop_loss("bullish", 100, 90, 2), 98)
+        self.assertEqual(_capped_stop_loss("bearish", 100, 110, 2), 102)
+
+    def test_standard_targets_use_one_and_one_point_five_r(self):
+        self.assertEqual(
+            _take_profit_levels("bullish", 100, 2, 1, 1.5, None, 95, 110),
+            (102, 103),
+        )
+
+    def test_range_reversion_prefers_closer_midpoint(self):
+        self.assertEqual(
+            _take_profit_levels("bullish", 100, 4, 1, 1.5, "range_reversion", 96, 106),
+            (101, 106),
+        )
 
 
 class ClosedCandleTests(unittest.TestCase):
@@ -120,6 +139,20 @@ class TelegramAlertTests(unittest.TestCase):
         }
         self.assertEqual(_completed_text(response), "Finished safely.")
 
+    def test_removes_alert_after_entry_window_closes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "telegram_alerts.json"
+            state_path.write_text(
+                '{"sent": ["old"], "active_alerts": {"EURUSD:1h": '
+                '{"key": "old", "messages": [{"chat_id": "7", "message_id": 42}]}}}'
+            )
+            settings = SimpleNamespace(telegram_bot_token="token", telegram_alert_state_path=str(state_path))
+            with patch("app.telegram_alerts.get_settings", return_value=settings), patch("app.telegram_alerts._api_call") as api_call:
+                removed = remove_outdated_alerts(set())
+            self.assertEqual(removed, 1)
+            api_call.assert_called_once_with("deleteMessage", {"chat_id": "7", "message_id": 42})
+            self.assertEqual(json.loads(state_path.read_text())["active_alerts"], {})
+
 
 class OutcomePathTests(unittest.TestCase):
     def test_take_profit_hit_resolves_before_time_horizon(self):
@@ -139,6 +172,19 @@ class OutcomePathTests(unittest.TestCase):
             self.assertTrue(_resolve_entry(entry, signal_time + timedelta(minutes=30)))
         self.assertTrue(entry["outcome"]["success"])
         self.assertEqual(entry["outcome"]["label"], "take_profit_1")
+
+    def test_stats_identify_best_market_resolved_in_last_24_hours(self):
+        now = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+        entries = [
+            {"market_code": "EURUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "a", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=2)).isoformat(), "success": True}},
+            {"market_code": "GBPUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "b", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=2)).isoformat(), "success": True}},
+            {"market_code": "GBPUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "c", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=3)).isoformat(), "success": True}},
+            {"market_code": "USDJPY", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "d", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=25)).isoformat(), "success": True}},
+        ]
+        with patch("app.signal_journal._read_state", return_value={"signals": entries}):
+            stats = signal_outcome_stats(now=now)
+        self.assertEqual(stats.best_market_24h["code"], "GBPUSD")
+        self.assertEqual(stats.best_market_24h["resolved"], 2)
 
 
 class LearningTests(unittest.TestCase):

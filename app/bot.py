@@ -10,7 +10,7 @@ from app.markets import MARKETS
 from app.news import fetch_news_sentiment
 from app.session import attach_market_status
 from app.signal_journal import record_signal, resolve_signal_outcomes
-from app.telegram_alerts import send_market_update, send_viable_entry_alert
+from app.telegram_alerts import _alert_key, remove_outdated_alerts, send_market_update, send_viable_entry_alert
 
 
 learner = AdaptiveSignalModel()
@@ -21,6 +21,7 @@ def run_once() -> list[dict]:
     signals = []
     analyzed_signals = []
     candidate_count = 0
+    active_alert_keys: set[str] = set()
     for market in [attach_market_status(market) for market in MARKETS.values()]:
         if settings.filter_closed_markets and not market.is_open:
             continue
@@ -56,11 +57,13 @@ def run_once() -> list[dict]:
             tier = trade_candidate_tier(signal)
             if tier:
                 candidate_count += 1
+                active_alert_keys.add(_alert_key(signal, tier=tier))
                 send_viable_entry_alert(signal, tier=tier)
             signals.append(signal.model_dump())
         except Exception as exc:
             signals.append({"market": market.code, "error": str(exc)})
     resolve_signal_outcomes()
+    remove_outdated_alerts(active_alert_keys)
     if analyzed_signals and candidate_count == 0:
         send_market_update(analyzed_signals)
     return signals
