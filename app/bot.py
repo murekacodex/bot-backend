@@ -11,6 +11,7 @@ from app.news import fetch_news_sentiment
 from app.session import attach_market_status
 from app.signal_journal import record_signal, resolve_signal_outcomes
 from app.telegram_alerts import _alert_key, remove_outdated_alerts, send_market_update, send_viable_entry_alert
+from app.timeframes import timeframe_contexts
 
 
 learner = AdaptiveSignalModel()
@@ -40,10 +41,13 @@ def run_once() -> list[dict]:
                 else:
                     current_time = current_time.astimezone(timezone.utc)
                 learner.update_from_price(market.code, current_close, now=current_time)
+                contexts, timeframe_warnings = timeframe_contexts(market, interval)
                 signal = analyze_market(
                     market, frame, interval=interval, period=period,
                     news=market_news, learner=learner,
+                    timeframes=contexts,
                 )
+                signal.warnings.extend(timeframe_warnings)
                 learner.register_prediction(
                     market_code=market.code,
                     direction=signal.direction,

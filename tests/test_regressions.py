@@ -20,6 +20,7 @@ from app.analysis import (
     _suggested_lot_size,
     _take_profit_levels,
 )
+from app import bot
 from app.config import ANALYSIS_TIMEFRAMES
 from app.learning import AdaptiveSignalModel
 from app.main import validate_timeframe
@@ -51,6 +52,53 @@ class TimeframeValidationTests(unittest.TestCase):
 
     def test_allows_resampled_four_hour_period(self):
         validate_timeframe("4h", "1mo")
+
+    def test_background_worker_passes_cross_timeframe_context_to_telegram_signal(self):
+        market = Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex")
+        frame = pd.DataFrame(
+            {"close": [1.1]},
+            index=pd.to_datetime(["2026-01-01T10:00:00Z"]),
+        )
+        contexts = {"higher": SimpleNamespace(direction="bullish"), "lower": SimpleNamespace(direction="bullish")}
+        signal = Signal.model_construct(
+            market=market,
+            interval="1h",
+            period="5d",
+            timestamp="2026-01-01T11:00:00+00:00",
+            direction="bullish",
+            confidence=70,
+            score=3.0,
+            strategy="trend",
+            reasons=[],
+            warnings=[],
+            indicators={},
+            timeframes=contexts,
+            features={},
+            risk=None,
+            last_candle=SimpleNamespace(close=1.1),
+        )
+        settings = SimpleNamespace(filter_closed_markets=False, enable_news_analysis=False)
+
+        with (
+            patch.object(bot, "MARKETS", {market.code: market}),
+            patch.object(bot, "ANALYSIS_TIMEFRAMES", {"1h": "5d"}),
+            patch.object(bot, "get_settings", return_value=settings),
+            patch.object(bot, "attach_market_status", return_value=market),
+            patch.object(bot, "fetch_candles", return_value=frame),
+            patch.object(bot, "timeframe_contexts", return_value=(contexts, [])) as context_loader,
+            patch.object(bot, "analyze_market", return_value=signal) as analyze,
+            patch.object(bot.learner, "update_from_price"),
+            patch.object(bot.learner, "register_prediction"),
+            patch.object(bot, "record_signal"),
+            patch.object(bot, "trade_candidate_tier", return_value=None),
+            patch.object(bot, "resolve_signal_outcomes"),
+            patch.object(bot, "remove_outdated_alerts"),
+            patch.object(bot, "send_market_update"),
+        ):
+            bot.run_once()
+
+        context_loader.assert_called_once_with(market, "1h")
+        self.assertIs(analyze.call_args.kwargs["timeframes"], contexts)
 
 
 class RiskSizingTests(unittest.TestCase):

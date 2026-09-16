@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier, summarize_timeframe
+from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier
 from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
 from app.config import ANALYSIS_TIMEFRAMES, get_settings
 from app.learning import AdaptiveSignalModel
@@ -21,6 +21,7 @@ from app.research import attribute_outcomes, backtest_frame, monte_carlo, optimi
 from app.session import attach_market_status
 from app.signal_journal import list_signal_log, record_signal, record_signals, resolve_signal_outcomes, signal_outcome_stats
 from app.telegram_alerts import send_viable_entry_alert, start_telegram_poller
+from app.timeframes import timeframe_contexts
 
 settings = get_settings()
 settings.validate_security()
@@ -125,16 +126,6 @@ def news(code: str, _: UserPublic = Depends(current_user)) -> NewsSentiment:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-TIMEFRAME_MAP = {
-    "1m": {"lower": None, "higher": ("5m", "1d")},
-    "5m": {"lower": None, "higher": ("15m", "1d")},
-    "15m": {"lower": ("5m", "1d"), "higher": ("1h", "5d")},
-    "30m": {"lower": ("15m", "1d"), "higher": ("1h", "5d")},
-    "1h": {"lower": ("15m", "1d"), "higher": ("1d", "3mo")},
-    "4h": {"lower": ("1h", "5d"), "higher": ("1d", "3mo")},
-    "1d": {"lower": ("1h", "5d"), "higher": ("1wk", "1y")},
-}
-
 SUPPORTED_TIMEFRAMES = {
     "1m": {"1d", "5d"},
     "15m": {"1d", "5d", "1mo"},
@@ -149,23 +140,6 @@ def validate_timeframe(interval: str, period: str) -> None:
     if period not in SUPPORTED_TIMEFRAMES.get(interval, set()):
         supported = ", ".join(sorted(SUPPORTED_TIMEFRAMES.get(interval, set()))) or "none"
         raise HTTPException(status_code=422, detail=f"Unsupported timeframe. {interval} supports: {supported}")
-
-
-def timeframe_contexts(market: Market, interval: str) -> tuple[dict, list[str]]:
-    contexts = {}
-    warnings = []
-    selected = TIMEFRAME_MAP.get(interval, TIMEFRAME_MAP["1h"])
-    for label in ("higher", "lower"):
-        selection = selected.get(label)
-        if not selection:
-            continue
-        selected_interval, selected_period = selection
-        try:
-            frame = fetch_candles(market, interval=selected_interval, period=selected_period)
-            contexts[label] = summarize_timeframe(frame, interval=selected_interval, period=selected_period)
-        except Exception as exc:
-            warnings.append(f"{label.title()} timeframe {selected_interval} unavailable: {exc}")
-    return contexts, warnings
 
 
 @app.get("/signals", response_model=list[Signal])
