@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.models import ModelSignal
-from app.persistence import atomic_write_json
+from app.persistence import atomic_write_json, file_lock
 
 
 def _sigmoid(value: float) -> float:
@@ -32,6 +32,8 @@ class AdaptiveSignalModel:
             "samples_seen": 0,
             "resolved_predictions": 0,
             "correct_predictions": 0,
+            "successful_signals_learned": 0,
+            "unsuccessful_signals_learned": 0,
             "squared_error_sum": 0.0,
             "pending_predictions": [],
             "updated_at": None,
@@ -87,6 +89,8 @@ class AdaptiveSignalModel:
             adjustment=round(adjustment if learning_ready else 0.0, 4),
             samples_seen=int(self.state.get("samples_seen") or 0),
             resolved_predictions=resolved,
+            successful_signals_learned=int(self.state.get("successful_signals_learned") or 0),
+            unsuccessful_signals_learned=int(self.state.get("unsuccessful_signals_learned") or 0),
             accuracy=round(accuracy, 4) if accuracy is not None else None,
             bias=round(float(self.state.get("bias") or 0.0), 4),
             brier_score=round(brier_score, 4) if brier_score is not None else None,
@@ -107,37 +111,44 @@ class AdaptiveSignalModel:
         if not self.settings.enable_learning:
             return
 
-        self.state = self._load_state()
-        predicted_at = (timestamp or datetime.now(timezone.utc)).isoformat()
-        duplicate = any(
-            item.get("market_code") == market_code
-            and item.get("interval") == interval
-            and item.get("period") == period
-            and item.get("predicted_at") == predicted_at
-            for item in self.state["pending_predictions"]
-        )
-        if duplicate:
-            return
+        with file_lock(self.path):
+            self.state = self._load_state()
+            predicted_at = (timestamp or datetime.now(timezone.utc)).isoformat()
+            duplicate = any(
+                item.get("market_code") == market_code
+                and item.get("interval") == interval
+                and item.get("period") == period
+                and item.get("predicted_at") == predicted_at
+                for item in self.state["pending_predictions"]
+            )
+            if duplicate:
+                return
 
-        self.state["pending_predictions"].append(
-            {
-                "id": str(uuid4()),
-                "market_code": market_code,
-                "direction": direction,
-                "entry_price": float(entry_price),
-                "features": {name: float(value) for name, value in features.items()},
-                "interval": interval,
-                "period": period,
-                "predicted_at": predicted_at,
-                "resolved": False,
-            }
-        )
-        self.state["samples_seen"] = int(self.state.get("samples_seen") or 0) + 1
-        self._save()
+            self.state["pending_predictions"].append(
+                {
+                    "id": str(uuid4()),
+                    "market_code": market_code,
+                    "direction": direction,
+                    "entry_price": float(entry_price),
+                    "features": {name: float(value) for name, value in features.items()},
+                    "interval": interval,
+                    "period": period,
+                    "predicted_at": predicted_at,
+                    "resolved": False,
+                }
+            )
+            self.state["samples_seen"] = int(self.state.get("samples_seen") or 0) + 1
+            self._save()
 
     def update_from_price(self, market_code: str, current_price: float, now: datetime | None = None) -> int:
         if not self.settings.enable_learning:
             return 0
+
+        with file_lock(self.path):
+            self.state = self._load_state()
+            return self._update_from_price(market_code, current_price, now)
+
+    def _update_from_price(self, market_code: str, current_price: float, now: datetime | None = None) -> int:
 
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
@@ -174,18 +185,10 @@ class AdaptiveSignalModel:
             move = (float(current_price) - entry_price) / entry_price
             threshold = float(self.settings.learning_min_move_pct)
 
-            if abs(move) < threshold:
-                item["resolved"] = True
-                item["resolved_at"] = current.isoformat()
-                item["outcome_label"] = None
-                item["realized_move_pct"] = round(move * 100, 4)
-                item["actual_price"] = float(current_price)
-                retained.append(item)
-                updated += 1
-                continue
-
             # The model estimates future price direction: 1 is up and 0 is down.
-            label = 1 if move > 0 else 0
+            # A flat result uses 0.5, teaching the model to reduce confidence
+            # instead of silently discarding an unsuccessful prediction.
+            label = 0.5 if abs(move) < threshold else (1.0 if move > 0 else 0.0)
 
             features = {name: float(value) for name, value in item.get("features", {}).items()}
             probability = self.probability(features)
@@ -199,14 +202,21 @@ class AdaptiveSignalModel:
             self.state["bias"] = float(self.state.get("bias") or 0.0) + (self.settings.learning_rate * error)
             self.state["resolved_predictions"] = int(self.state.get("resolved_predictions") or 0) + 1
             predicted_label = 1 if probability >= 0.5 else 0
-            predicted_correctly = predicted_label == label
+            predicted_correctly = label in {0.0, 1.0} and predicted_label == int(label)
             if predicted_correctly:
                 self.state["correct_predictions"] = int(self.state.get("correct_predictions") or 0) + 1
+            signal_succeeded = (
+                (direction == "bullish" and label == 1.0)
+                or (direction == "bearish" and label == 0.0)
+            )
+            outcome_counter = "successful_signals_learned" if signal_succeeded else "unsuccessful_signals_learned"
+            self.state[outcome_counter] = int(self.state.get(outcome_counter) or 0) + 1
             self.state["squared_error_sum"] = float(self.state.get("squared_error_sum") or 0.0) + ((probability - label) ** 2)
 
             item["resolved"] = True
             item["resolved_at"] = current.isoformat()
             item["outcome_label"] = label
+            item["signal_success"] = signal_succeeded
             item["realized_move_pct"] = round(move * 100, 4)
             item["predicted_probability"] = round(probability, 4)
             item["actual_price"] = float(current_price)

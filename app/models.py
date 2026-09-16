@@ -117,6 +117,8 @@ class ModelSignal(BaseModel):
     adjustment: float
     samples_seen: int
     resolved_predictions: int
+    successful_signals_learned: int = 0
+    unsuccessful_signals_learned: int = 0
     accuracy: float | None = None
     bias: float
     brier_score: float | None = None

@@ -230,6 +230,50 @@ class LearningTests(unittest.TestCase):
         # prediction was wrong even though the rule-based direction was right.
         self.assertEqual(self.model.state["correct_predictions"], 0)
         self.assertEqual(self.model.state["squared_error_sum"], 0.25)
+        self.assertEqual(self.model.state["successful_signals_learned"], 1)
+
+    def test_successful_bullish_signal_strengthens_upward_weight(self):
+        timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.model.register_prediction(
+            market_code="EURUSD", direction="bullish", entry_price=1.0,
+            features={"technical_score": 1.0}, interval="1h", period="5d", timestamp=timestamp,
+        )
+        self.model.update_from_price("EURUSD", 1.02, now=timestamp + timedelta(hours=25))
+        self.assertGreater(self.model.state["weights"]["technical_score"], 0)
+        self.assertEqual(self.model.state["successful_signals_learned"], 1)
+
+    def test_failed_bullish_signal_teaches_downward_direction(self):
+        timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.model.register_prediction(
+            market_code="EURUSD", direction="bullish", entry_price=1.0,
+            features={"technical_score": 1.0}, interval="1h", period="5d", timestamp=timestamp,
+        )
+        self.model.update_from_price("EURUSD", 0.98, now=timestamp + timedelta(hours=25))
+        self.assertLess(self.model.state["weights"]["technical_score"], 0)
+        self.assertEqual(self.model.state["unsuccessful_signals_learned"], 1)
+
+    def test_failed_bearish_signal_teaches_upward_direction(self):
+        timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.model.register_prediction(
+            market_code="EURUSD", direction="bearish", entry_price=1.0,
+            features={"technical_score": 1.0}, interval="1h", period="5d", timestamp=timestamp,
+        )
+        self.model.update_from_price("EURUSD", 1.02, now=timestamp + timedelta(hours=25))
+        self.assertGreater(self.model.state["weights"]["technical_score"], 0)
+        self.assertEqual(self.model.state["unsuccessful_signals_learned"], 1)
+
+    def test_flat_unsuccessful_signal_is_counted_and_reduces_confidence(self):
+        timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.model.state["bias"] = 1.0
+        self.model._save()
+        self.model.register_prediction(
+            market_code="EURUSD", direction="bullish", entry_price=1.0,
+            features={"technical_score": 1.0}, interval="1h", period="5d", timestamp=timestamp,
+        )
+        self.model.update_from_price("EURUSD", 1.0001, now=timestamp + timedelta(hours=25))
+        self.assertLess(self.model.state["bias"], 1.0)
+        self.assertEqual(self.model.state["resolved_predictions"], 1)
+        self.assertEqual(self.model.state["unsuccessful_signals_learned"], 1)
 
     def test_model_does_not_adjust_signals_before_warmup(self):
         summary = self.model.summary({"technical_score": 1.0})
