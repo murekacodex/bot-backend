@@ -79,6 +79,14 @@ Environment variables:
 - `OPENAI_BACKGROUND_POLL_SECONDS`: interval for checking background response completion.
 - `OPENAI_BACKGROUND_TIMEOUT_SECONDS`: maximum time to wait before reporting a timeout.
 - `TELEGRAM_MARKET_UPDATE_HOURS`: minimum interval between no-setup market updates; set to `0` to disable.
+- `MINIMUM_ALERT_CONFIDENCE`: minimum calibrated confidence required for an automated swing-trade alert (default `72`).
+- `METAAPI_TOKEN`, `METAAPI_ACCOUNT_ID`, `METAAPI_REGION`: optional primary broker quote source.
+- `REQUIRE_LIVE_PRICE_FOR_ALERTS`: block alerts unless a fresh live timing quote is available.
+- `ENABLE_YAHOO_LIVE_FALLBACK`: use the latest Yahoo 1-minute candle for timing when MetaApi is unavailable.
+- `LIVE_PRICE_MAX_AGE_SECONDS`, `LIVE_PRICE_MAX_DEVIATION_ATR`: reject stale or chased entries.
+- `LIVE_PRICE_MAX_SPREAD_BPS_FOREX`, `LIVE_PRICE_MAX_SPREAD_BPS_METAL`: maximum alert spread.
+- `MODEL_RESOLVED_RETENTION`, `SIGNAL_LOG_RETENTION`: bound persistent JSON state growth.
+- `AUTO_DST_SESSIONS`: calculate Asia, London, and New York windows in their local time zones.
 
 ## Telegram Trade Alerts
 
@@ -86,6 +94,10 @@ All configured forex and metals markets are eligible. Direction-aware trend,
 RSI, candlestick, volatility, and preferred-session checks classify qualifying
 setups as `ENTRY READY` or `WATCHLIST`. If neither tier qualifies while markets
 are open, a rate-limited market update confirms that the scanner is still running.
+
+Standalone 1-minute predictions are disabled. A fresh broker quote and current
+1-minute candle are used only as the final spread, deviation, and micro-momentum
+timing gate for signals generated from 15-minute and higher completed candles.
 
 ## Strategy and Research Framework
 

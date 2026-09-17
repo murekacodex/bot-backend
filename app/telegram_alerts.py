@@ -29,9 +29,14 @@ def _api_call(method: str, payload: dict) -> dict:
 def _auth_state() -> dict:
     path = Path(get_settings().telegram_auth_state_path)
     try:
-        return json.loads(path.read_text()) if path.exists() else {"authorized": [], "pending": {}, "offset": 0}
+        state = json.loads(path.read_text()) if path.exists() else {}
+        state.setdefault("authorized", [])
+        state.setdefault("pending", {})
+        state.setdefault("offset", 0)
+        state.setdefault("login_attempts", {})
+        return state
     except (OSError, json.JSONDecodeError):
-        return {"authorized": [], "pending": {}, "offset": 0}
+        return {"authorized": [], "pending": {}, "offset": 0, "login_attempts": {}}
 
 
 def _save_auth_state(state: dict) -> None:
@@ -106,6 +111,22 @@ def _handle_update(update: dict, state: dict) -> None:
             elif not start_assistant_task(chat_id, text, _send_text):
                 _send_text(chat_id, "⏳ I’m still working on your previous request. Please wait for the result.")
         return
+    attempts = state.setdefault("login_attempts", {})
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, settings.telegram_login_lockout_minutes))
+    recent = []
+    for value in attempts.get(chat_id, []):
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed >= cutoff:
+                recent.append(parsed.isoformat())
+        except ValueError:
+            continue
+    attempts[chat_id] = recent
+    if len(recent) >= max(1, settings.telegram_login_max_attempts):
+        _send_text(chat_id, "Access temporarily locked after repeated failed attempts. Try again later.")
+        return
     pending = state.setdefault("pending", {})
     if text.startswith("/start") or text.startswith("/login"):
         pending[chat_id] = "username"
@@ -126,6 +147,7 @@ def _handle_update(update: dict, state: dict) -> None:
             pending[chat_id] = "password"
             _send_text(chat_id, "Enter your password (this message will be deleted after checking):")
         else:
+            attempts[chat_id].append(datetime.now(timezone.utc).isoformat())
             pending.pop(chat_id, None)
             _send_text(chat_id, "Access denied. Send /login to try again.")
     elif pending.get(chat_id) == "password":
@@ -138,8 +160,10 @@ def _handle_update(update: dict, state: dict) -> None:
             authorized = {str(value) for value in state.setdefault("authorized", [])}
             authorized.add(chat_id)
             state["authorized"] = sorted(authorized)
+            attempts.pop(chat_id, None)
             _send_text(chat_id, "✅ Access approved. Viable trade alerts are enabled.")
         else:
+            attempts[chat_id].append(datetime.now(timezone.utc).isoformat())
             _send_text(chat_id, "Access denied. Send /login to try again.")
         pending.pop(chat_id, None)
 
@@ -186,6 +210,14 @@ def _read_alert_state(path: Path) -> dict:
     return state
 
 
+def alert_was_sent(signal: Signal, tier: str) -> bool:
+    """Check whether this candle has already emitted a lifecycle-stage alert."""
+    state_path = Path(get_settings().telegram_alert_state_path)
+    with file_lock(state_path):
+        state = _read_alert_state(state_path)
+    return _alert_key(signal, tier=tier) in state["sent"]
+
+
 def _delete_alert_messages(messages: list[dict]) -> None:
     for message in messages:
         chat_id = message.get("chat_id")
@@ -198,7 +230,7 @@ def _delete_alert_messages(messages: list[dict]) -> None:
             print(json.dumps({"telegram_alert_delete_error": str(exc)}), flush=True)
 
 
-def remove_outdated_alerts(active_keys: set[str]) -> int:
+def remove_outdated_alerts(active_keys: set[str], protected_scopes: set[str] | None = None) -> int:
     """Delete bot-owned trade alerts that are no longer viable in the current scan."""
     settings = get_settings()
     if not settings.telegram_bot_token:
@@ -206,9 +238,10 @@ def remove_outdated_alerts(active_keys: set[str]) -> int:
     state_path = Path(settings.telegram_alert_state_path)
     with file_lock(state_path):
         state = _read_alert_state(state_path)
+        protected = protected_scopes or set()
         outdated = [
             (scope, alert) for scope, alert in state["active_alerts"].items()
-            if str(alert.get("key")) not in active_keys
+            if str(alert.get("key")) not in active_keys and scope not in protected
         ]
         market_updates = list(state.get("market_update_messages") or []) if active_keys else []
     for _, alert in outdated:
@@ -232,12 +265,14 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
     risk = signal.risk
     if risk is None:
         return ""
-    heading = "🚨 ENTRY READY" if tier == "entry_ready" else "👀 WATCHLIST"
+    heading = "🚨 TRADE RIPE — ENTRY READY" if tier == "entry_ready" else "👀 SWING SETUP — WATCHING TARGET"
     direction_icon = "🟢" if signal.direction == "bullish" else "🔴"
     strategy = getattr(signal, "strategy", None) or "Multi-factor setup"
     regime = getattr(signal, "regime", None)
     edge = getattr(signal, "historical_edge", None)
     sessions = " / ".join(part.replace("_", " ").title() for part in signal.session.active_sessions) if signal.session else "Unknown"
+    live = getattr(signal, "live_quote", None)
+    retest_target = (getattr(signal, "indicators", {}) or {}).get("retest_target")
     return "\n".join(
         (
             f"{heading}",
@@ -245,6 +280,7 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
             "",
             "━━━━━━━━ TRADE LEVELS ━━━━━━━━",
             f"➡️  ENTRY   {risk.entry}",
+            f"📍  RETEST TARGET   {retest_target if retest_target is not None else risk.entry}",
             f"🛑  STOP LOSS   {risk.stop_loss}",
             f"🎯  TAKE PROFIT 1   {risk.take_profit_1}",
             f"🎯  TAKE PROFIT 2   {risk.take_profit_2}",
@@ -256,11 +292,23 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
             f"Confidence: {signal.confidence}%",
             f"Score: {signal.score}",
             (
+                f"Live timing: {live.source}, 1m {live.micro_direction}, spread {live.spread_bps:.1f} bps"
+                if live else "Live timing: unavailable"
+            ),
+            (
                 f"Recent edge: {edge.expectancy_r:+.2f}R from {edge.samples} samples"
                 if edge and edge.sufficient_evidence
                 else "Recent edge: collecting evidence"
             ),
-            "Confirm live price and spread with your broker before entering.",
+            (
+                "Live timing is confirmed. Verify price and spread with your broker before entering."
+                if tier == "entry_ready"
+                else (
+                    f"Displacement through structure detected. Watching the retracement back to "
+                    f"{retest_target if retest_target is not None else risk.entry}; wait for directional resumption "
+                    "and the TRADE RIPE alert before entering."
+                )
+            ),
         )
     )
 

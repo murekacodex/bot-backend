@@ -78,11 +78,16 @@ def _unique_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
+def _delivered_trade_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Performance metrics must describe trades users actually received."""
+    return [entry for entry in entries if entry.get("notification_delivered") is True]
+
+
 def calibrated_confidence(market_code: str, interval: str, direction: str, fallback: int) -> int:
     """Return a conservative empirical hit-rate estimate for this exact regime."""
     try:
         with _lock, file_lock(_state_path()):
-            entries = _unique_entries(list(_read_state()["signals"]))
+            entries = _delivered_trade_entries(_unique_entries(list(_read_state()["signals"])))
     except Exception:
         return min(fallback, 65)
     resolved = [
@@ -131,7 +136,7 @@ def rolling_performance_edge(
     settings = get_settings()
     try:
         with _lock, file_lock(_state_path()):
-            entries = _unique_entries(list(_read_state()["signals"]))
+            entries = _delivered_trade_entries(_unique_entries(list(_read_state()["signals"])))
     except Exception:
         entries = []
     resolved = [
@@ -178,7 +183,13 @@ def rolling_performance_edge(
     )
 
 
-def _signal_to_entry(signal: Signal, source: str) -> SignalLogEntry:
+def _signal_to_entry(
+    signal: Signal,
+    source: str,
+    *,
+    alert_tier: str | None = None,
+    notification_delivered: bool = False,
+) -> SignalLogEntry:
     return SignalLogEntry(
         id=str(uuid4()),
         source=source,
@@ -203,19 +214,44 @@ def _signal_to_entry(signal: Signal, source: str) -> SignalLogEntry:
         reasons=signal.reasons,
         warnings=signal.warnings,
         outcome=SignalOutcome(status="pending"),
+        alert_tier=alert_tier,
+        notification_delivered=notification_delivered,
     )
 
 
-def record_signal(signal: Signal, source: str) -> SignalLogEntry:
-    entry = _signal_to_entry(signal, source)
+def record_signal(
+    signal: Signal,
+    source: str,
+    *,
+    alert_tier: str | None = None,
+    notification_delivered: bool = False,
+) -> SignalLogEntry:
+    entry = _signal_to_entry(
+        signal,
+        source,
+        alert_tier=alert_tier,
+        notification_delivered=notification_delivered,
+    )
     entry_payload = entry.model_dump()
     with _lock, file_lock(_state_path()):
         state = _read_state()
         key = _entry_key(entry_payload)
         for existing in state["signals"]:
             if _entry_key(existing) == key:
+                changed = False
+                if notification_delivered and not existing.get("notification_delivered"):
+                    existing["notification_delivered"] = True
+                    changed = True
+                if alert_tier and existing.get("alert_tier") != alert_tier:
+                    existing["alert_tier"] = alert_tier
+                    changed = True
+                if changed:
+                    _write_state(state)
                 return SignalLogEntry(**existing)
         state["signals"].append(entry_payload)
+        retention = max(100, get_settings().signal_log_retention)
+        if len(state["signals"]) > retention:
+            state["signals"] = state["signals"][-retention:]
         _write_state(state)
     return entry
 
@@ -348,7 +384,7 @@ def resolve_signal_outcomes() -> int:
 
 def signal_outcome_stats(now: datetime | None = None) -> SignalOutcomeStats:
     with _lock, file_lock(_state_path()):
-        entries = _unique_entries(list(_read_state()["signals"]))
+        entries = _delivered_trade_entries(_unique_entries(list(_read_state()["signals"])))
 
     total = len(entries)
     resolved_entries = [entry for entry in entries if entry.get("outcome", {}).get("status") == "resolved"]

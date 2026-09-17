@@ -4,7 +4,6 @@ from app.models import Market
 
 
 TIMEFRAME_MAP = {
-    "1m": {"lower": None, "higher": ("5m", "1d")},
     "5m": {"lower": None, "higher": ("15m", "1d")},
     "15m": {"lower": ("5m", "1d"), "higher": ("1h", "5d")},
     "30m": {"lower": ("15m", "1d"), "higher": ("1h", "5d")},

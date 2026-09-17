@@ -86,6 +86,10 @@ def fetch_candles(market: Market, interval: str | None = None, period: str | Non
         frame.columns = frame.columns.get_level_values(0)
 
     frame = frame.rename(columns=str.lower)
+    frame = frame.loc[:, ~frame.columns.duplicated(keep="first")]
+    for column in ("open", "high", "low", "close", "volume"):
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame.dropna(subset=["open", "high", "low", "close"])
     frame.index = pd.to_datetime(frame.index)
 

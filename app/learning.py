@@ -155,7 +155,6 @@ class AdaptiveSignalModel:
             current = current.replace(tzinfo=timezone.utc)
         else:
             current = current.astimezone(timezone.utc)
-        horizon = timedelta(hours=self.settings.learning_horizon_hours)
         pending = self.state.get("pending_predictions") or []
         updated = 0
         retained: list[dict] = []
@@ -176,7 +175,14 @@ class AdaptiveSignalModel:
             except Exception:
                 predicted_at = current
 
-            if current - predicted_at < horizon:
+            horizon_hours = {
+                "15m": 6,
+                "30m": 12,
+                "1h": 24,
+                "4h": 72,
+                "1d": 168,
+            }.get(str(item.get("interval")), self.settings.learning_horizon_hours)
+            if current - predicted_at < timedelta(hours=horizon_hours):
                 retained.append(item)
                 continue
 
@@ -223,7 +229,10 @@ class AdaptiveSignalModel:
             retained.append(item)
             updated += 1
 
-        self.state["pending_predictions"] = retained
+        unresolved = [item for item in retained if not item.get("resolved")]
+        resolved = [item for item in retained if item.get("resolved")]
+        resolved.sort(key=lambda item: str(item.get("resolved_at") or ""), reverse=True)
+        self.state["pending_predictions"] = unresolved + resolved[: max(0, self.settings.model_resolved_retention)]
         if updated:
             self._save()
         return updated

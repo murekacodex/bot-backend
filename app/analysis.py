@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from app.learning import AdaptiveSignalModel, aggregate_features
-from app.config import get_settings
+from app.config import ANALYSIS_TIMEFRAMES, get_settings
 from app.models import Candle, Market, NewsSentiment, PatternHint, RiskPlan, Signal, TimeframeContext
 from app.market_data import interval_duration
 from app.factors import build_factor_breakdown
@@ -104,6 +104,29 @@ def _finite(value: float | int | None) -> float | None:
     if value is None or not math.isfinite(float(value)):
         return None
     return float(value)
+
+
+def _institutional_retest_setup(data: pd.DataFrame, direction: str, atr: float | None) -> tuple[bool, float | None]:
+    """Infer displacement through structure and return the broken level to retest.
+
+    This is a price-action proxy; it does not claim knowledge of actual institutional orders.
+    """
+    if len(data) < 21 or not atr or atr <= 0 or direction not in {"bullish", "bearish"}:
+        return False, None
+    current = data.iloc[-1]
+    prior = data.iloc[-21:-1]
+    body = abs(float(current.close) - float(current.open))
+    candle_range = max(float(current.high) - float(current.low), 1e-12)
+    decisive_body = body >= atr * 0.6
+    if direction == "bullish":
+        level = float(prior.high.max())
+        decisive_close = (float(current.high) - float(current.close)) / candle_range <= 0.25
+        displaced = float(current.close) > level
+    else:
+        level = float(prior.low.min())
+        decisive_close = (float(current.close) - float(current.low)) / candle_range <= 0.25
+        displaced = float(current.close) < level
+    return decisive_body and decisive_close and displaced, level
 
 
 def _capped_stop_loss(direction: str, entry: float, raw_stop: float, max_distance: float) -> float:
@@ -296,14 +319,26 @@ def _directional_rsi(signal: Signal) -> bool:
 
 
 def trade_candidate_tier(signal: Signal) -> str | None:
-    """Classify a safe, direction-aware setup for alerts and the dashboard."""
+    """Classify high-confidence swing setups for staged monitoring and entry."""
     if signal.market.code not in FOCUS_MARKETS or signal.direction == "neutral" or not signal.risk:
+        return None
+    settings = get_settings()
+    if signal.interval not in ANALYSIS_TIMEFRAMES or signal.confidence < settings.minimum_alert_confidence:
+        return None
+    indicators = getattr(signal, "indicators", {}) or {}
+    if not indicators.get("displacement_confirmed") or indicators.get("retest_target") is None:
         return None
     features = signal.features or {}
     max_atr_ratio = 0.015 if signal.market.category == "metal" else 0.002
     if float(features.get("atr_ratio", float("inf"))) > max_atr_ratio:
         return None
     if signal.session is None or signal.session.alignment != "aligned":
+        return None
+    higher = signal.timeframes.get("higher")
+    lower = signal.timeframes.get("lower")
+    if higher is None or higher.direction != signal.direction:
+        return None
+    if lower is not None and lower.direction != signal.direction:
         return None
     if not set(signal.session.active_sessions).intersection(signal.session.preferred_sessions):
         return None
@@ -534,6 +569,11 @@ def analyze_market(
     risk = None
     atr = _finite(latest.atr)
     close = float(latest.close)
+    displacement_confirmed, retest_target = _institutional_retest_setup(data, direction, atr)
+    if displacement_confirmed and retest_target is not None:
+        reasons.append(
+            f"Institutional-flow proxy: decisive displacement through structure; watching retest at {retest_target:.5f}"
+        )
     if atr and direction != "neutral":
         execution_bps = settings.execution_cost_bps_metal if market.category == "metal" else settings.execution_cost_bps_forex
         execution_cost = close * max(execution_bps, 0.0) / 10_000.0
@@ -545,7 +585,7 @@ def analyze_market(
         recent_low = float(recent.low.min())
         recent_high = float(recent.high.max())
         if direction == "bullish":
-            entry = close + execution_cost
+            entry = (retest_target if displacement_confirmed and retest_target is not None else close) + execution_cost
             if selected_name == "volatility_breakout":
                 raw_stop = min(entry - atr, float(recent.iloc[:-1].high.max()) - atr * 0.25)
             else:
@@ -553,7 +593,7 @@ def analyze_market(
             stop_loss = _capped_stop_loss(direction, entry, raw_stop, max_stop_distance)
             stop_distance = entry - stop_loss
         else:
-            entry = close - execution_cost
+            entry = (retest_target if displacement_confirmed and retest_target is not None else close) - execution_cost
             if selected_name == "volatility_breakout":
                 raw_stop = max(entry + atr, float(recent.iloc[:-1].low.min()) + atr * 0.25)
             else:
@@ -615,6 +655,8 @@ def analyze_market(
             "model_adjustment": round(model_adjustment, 4),
             "higher_timeframe": higher_context.direction if higher_context else None,
             "lower_timeframe": lower_context.direction if lower_context else None,
+            "displacement_confirmed": displacement_confirmed,
+            "retest_target": round(retest_target, 5) if retest_target is not None else None,
         },
         timeframes=timeframe_context,
         features=feature_map,

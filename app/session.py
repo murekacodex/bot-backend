@@ -25,6 +25,12 @@ SESSION_DISPLAY = {
     "new_york": "New York",
 }
 
+SESSION_LOCAL_WINDOWS = {
+    "asia": ("Asia/Tokyo", time(9, 0), time(17, 0)),
+    "london": ("Europe/London", time(8, 0), time(17, 0)),
+    "new_york": ("America/New_York", time(8, 0), time(17, 0)),
+}
+
 
 def _session_timezone() -> ZoneInfo:
     settings = get_settings()
@@ -132,6 +138,17 @@ def attach_market_status(market: Market, now: datetime | None = None) -> Market:
 
 
 def active_currency_sessions(now: datetime | None = None) -> list[str]:
+    settings = get_settings()
+    if settings.auto_dst_sessions:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        active = []
+        for session, (zone, open_time, close_time) in SESSION_LOCAL_WINDOWS.items():
+            local = current.astimezone(ZoneInfo(zone))
+            if local.weekday() < 5 and _time_in_range(local.time(), open_time, close_time):
+                active.append(session)
+        return active
     current = _current_session_time(now)
 
     active: list[str] = []
@@ -175,6 +192,22 @@ def preferred_sessions_for_market(market: Market) -> list[str]:
 
 def _next_session_start(preferred: list[str], now: datetime | None = None) -> tuple[str | None, datetime | None]:
     current = _current_session_time(now)
+    if get_settings().auto_dst_sessions:
+        candidates: list[tuple[str, datetime]] = []
+        current_utc = current.astimezone(timezone.utc)
+        for session in preferred:
+            definition = SESSION_LOCAL_WINDOWS.get(session)
+            if not definition:
+                continue
+            zone, open_time, _ = definition
+            local_now = current_utc.astimezone(ZoneInfo(zone))
+            candidate = local_now.replace(hour=open_time.hour, minute=open_time.minute, second=0, microsecond=0)
+            if candidate <= local_now:
+                candidate += timedelta(days=1)
+            while candidate.weekday() >= 5:
+                candidate += timedelta(days=1)
+            candidates.append((session, candidate.astimezone(_session_timezone())))
+        return min(candidates, key=lambda item: item[1]) if candidates else (None, None)
     windows = session_windows()
     candidates: list[tuple[str, datetime]] = []
 

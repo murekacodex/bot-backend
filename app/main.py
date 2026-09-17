@@ -52,6 +52,15 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/health/worker")
+def worker_health() -> dict:
+    if not settings.enable_background_worker:
+        return {"enabled": False, "running": False}
+    from app.bot import worker_status
+
+    return {"enabled": True, **worker_status}
+
+
 @app.get("/auth/setup")
 def auth_setup() -> dict[str, bool]:
     return {"needs_admin": not users_exist()}
@@ -127,7 +136,6 @@ def news(code: str, _: UserPublic = Depends(current_user)) -> NewsSentiment:
 
 
 SUPPORTED_TIMEFRAMES = {
-    "1m": {"1d", "5d"},
     "15m": {"1d", "5d", "1mo"},
     "30m": {"1d", "5d", "1mo"},
     "1h": {"5d", "1mo", "3mo"},

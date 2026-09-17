@@ -32,6 +32,18 @@ class RiskPlan(BaseModel):
     suggested_lot_size: float
 
 
+class LiveQuote(BaseModel):
+    symbol: str
+    bid: float
+    ask: float
+    time: str
+    spread_bps: float
+    source: str = "MetaApi"
+    micro_timeframe: str = "1m"
+    micro_direction: str | None = None
+    micro_candle_time: str | None = None
+
+
 class SignalOutcome(BaseModel):
     status: str
     resolved_at: str | None = None
@@ -66,6 +78,8 @@ class SignalLogEntry(BaseModel):
     reasons: list[str]
     warnings: list[str]
     outcome: SignalOutcome
+    alert_tier: str | None = None
+    notification_delivered: bool = False
 
 
 class SignalOutcomeStats(BaseModel):
@@ -252,3 +266,4 @@ class Signal(BaseModel):
     session: SessionSignal | None = None
     risk: RiskPlan | None
     last_candle: Candle
+    live_quote: LiveQuote | None = None

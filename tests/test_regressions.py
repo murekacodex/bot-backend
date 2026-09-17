@@ -17,8 +17,10 @@ from app.analysis import (
     _detect_patterns,
     _directional_pattern_score,
     _directional_rsi,
+    _institutional_retest_setup,
     _suggested_lot_size,
     _take_profit_levels,
+    trade_candidate_tier,
 )
 from app import bot
 from app.config import ANALYSIS_TIMEFRAMES
@@ -27,7 +29,8 @@ from app.main import validate_timeframe
 from app.market_data import completed_candles
 from app.macro import assess_macro
 from app.markets import get_market
-from app.models import MacroInputs, Market, RiskPlan, SessionSignal, Signal
+from app.live_prices import apply_live_entry
+from app.models import LiveQuote, MacroInputs, Market, RiskPlan, SessionSignal, Signal
 from app.portfolio_risk import adjusted_risk_fraction, currency_exposure
 from app.regime import classify_regime
 from app.research import monte_carlo, performance_metrics
@@ -39,11 +42,13 @@ from app.telegram_assistant import _completed_text
 
 
 class TimeframeValidationTests(unittest.TestCase):
-    def test_background_scan_covers_every_dashboard_timeframe(self):
-        self.assertEqual(set(ANALYSIS_TIMEFRAMES), {"1m", "15m", "30m", "1h", "4h", "1d"})
+    def test_background_scan_only_covers_swing_timeframes(self):
+        self.assertEqual(set(ANALYSIS_TIMEFRAMES), {"4h", "1d"})
 
-    def test_allows_one_minute_history_supported_by_provider(self):
-        validate_timeframe("1m", "5d")
+    def test_rejects_one_minute_trade_signals(self):
+        with self.assertRaises(HTTPException) as raised:
+            validate_timeframe("1m", "5d")
+        self.assertEqual(raised.exception.status_code, 422)
 
     def test_rejects_too_short_daily_period(self):
         with self.assertRaises(HTTPException) as raised:
@@ -99,6 +104,105 @@ class TimeframeValidationTests(unittest.TestCase):
 
         context_loader.assert_called_once_with(market, "1h")
         self.assertIs(analyze.call_args.kwargs["timeframes"], contexts)
+
+    def test_conflicting_higher_timeframe_blocks_alert(self):
+        signal = SimpleNamespace(
+            market=SimpleNamespace(code="EURUSD", category="forex"),
+            interval="4h",
+            direction="bullish",
+            confidence=80,
+            risk=SimpleNamespace(),
+            features={"atr_ratio": 0.001},
+            session=SimpleNamespace(alignment="aligned", active_sessions=["london"], preferred_sessions=["london"]),
+            timeframes={
+                "higher": SimpleNamespace(direction="bearish"),
+                "lower": SimpleNamespace(direction="bullish"),
+            },
+        )
+        self.assertIsNone(trade_candidate_tier(signal))
+
+    def test_low_confidence_swing_setup_is_not_alerted(self):
+        signal = SimpleNamespace(
+            market=SimpleNamespace(code="EURUSD", category="forex"), interval="4h",
+            direction="bullish", confidence=69, risk=SimpleNamespace(), features={"atr_ratio": 0.001},
+        )
+        self.assertIsNone(trade_candidate_tier(signal))
+
+    def test_intraday_setup_is_not_alerted_even_with_high_confidence(self):
+        signal = SimpleNamespace(
+            market=SimpleNamespace(code="EURUSD", category="forex"), interval="1h",
+            direction="bullish", confidence=90, risk=SimpleNamespace(), features={"atr_ratio": 0.001},
+        )
+        self.assertIsNone(trade_candidate_tier(signal))
+
+    def test_qualified_watchlist_is_kept_for_staged_notification(self):
+        signal = SimpleNamespace(
+            market=SimpleNamespace(code="EURUSD", category="forex"), interval="4h",
+            direction="bullish", confidence=80, risk=SimpleNamespace(), features={"atr_ratio": 0.001},
+            indicators={"displacement_confirmed": True, "retest_target": 1.1},
+            session=SimpleNamespace(alignment="aligned", active_sessions=["london"], preferred_sessions=["london"]),
+            timeframes={
+                "higher": SimpleNamespace(direction="bullish"),
+                "lower": SimpleNamespace(direction="bullish"),
+            },
+            strategy_evaluations=[SimpleNamespace(name="trend_pullback", direction="bullish", status="watchlist")],
+            selected_strategy="trend_pullback",
+        )
+        self.assertEqual(trade_candidate_tier(signal), "watchlist")
+
+
+class InstitutionalRetestTests(unittest.TestCase):
+    def test_bullish_displacement_marks_broken_high_as_retest_target(self):
+        frame = pd.DataFrame(
+            {
+                "open": [99.5] * 20 + [99.8],
+                "high": [100.0] * 20 + [101.2],
+                "low": [99.0] * 20 + [99.7],
+                "close": [99.7] * 20 + [101.1],
+            }
+        )
+        confirmed, target = _institutional_retest_setup(frame, "bullish", 1.0)
+        self.assertTrue(confirmed)
+        self.assertEqual(target, 100.0)
+
+
+class LiveTimingTests(unittest.TestCase):
+    def test_live_quote_reanchors_trade_plan(self):
+        now = datetime.now(timezone.utc)
+        signal = Signal.model_construct(
+            market=Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex"),
+            direction="bullish",
+            indicators={"atr": 0.01},
+            warnings=[],
+            reasons=[],
+            risk=RiskPlan(
+                entry=1.1, stop_loss=1.09, take_profit_1=1.11, take_profit_2=1.115,
+                risk_reward=1, risk_percent=1, risk_amount=10, suggested_lot_size=0.01,
+            ),
+        )
+        quote = LiveQuote(
+            symbol="EURUSD", bid=1.1009, ask=1.101, time=now.isoformat(), spread_bps=0.9,
+            micro_direction="bullish", micro_candle_time=now.isoformat(),
+        )
+        with patch("app.live_prices.fetch_live_quote", return_value=quote):
+            valid, reason = apply_live_entry(signal, now=now)
+        self.assertTrue(valid)
+        self.assertIsNone(reason)
+        self.assertEqual(signal.risk.entry, 1.101)
+        self.assertEqual(signal.risk.stop_loss, 1.091)
+
+    def test_opposing_one_minute_momentum_blocks_entry(self):
+        now = datetime.now(timezone.utc)
+        signal = Signal.model_construct(
+            market=Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex"),
+            direction="bullish", indicators={"atr": 0.01}, warnings=[], reasons=[],
+            risk=RiskPlan(entry=1.1, stop_loss=1.09, take_profit_1=1.11, take_profit_2=1.115, risk_reward=1, risk_percent=1, risk_amount=10, suggested_lot_size=0.01),
+        )
+        quote = LiveQuote(symbol="EURUSD", bid=1.1, ask=1.1001, time=now.isoformat(), spread_bps=0.9, micro_direction="bearish")
+        with patch("app.live_prices.fetch_live_quote", return_value=quote):
+            valid, reason = apply_live_entry(signal, now=now)
+        self.assertFalse(valid)
+        self.assertIn("1m timing", reason)
 
 
 class RiskSizingTests(unittest.TestCase):
@@ -233,10 +337,10 @@ class OutcomePathTests(unittest.TestCase):
     def test_stats_identify_best_market_resolved_in_last_24_hours(self):
         now = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
         entries = [
-            {"market_code": "EURUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "a", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=2)).isoformat(), "success": True}},
-            {"market_code": "GBPUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "b", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=2)).isoformat(), "success": True}},
-            {"market_code": "GBPUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "c", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=3)).isoformat(), "success": True}},
-            {"market_code": "USDJPY", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "d", "direction": "bullish", "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=25)).isoformat(), "success": True}},
+            {"market_code": "EURUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "a", "direction": "bullish", "notification_delivered": True, "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=2)).isoformat(), "success": True}},
+            {"market_code": "GBPUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "b", "direction": "bullish", "notification_delivered": True, "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=2)).isoformat(), "success": True}},
+            {"market_code": "GBPUSD", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "c", "direction": "bullish", "notification_delivered": True, "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=3)).isoformat(), "success": True}},
+            {"market_code": "USDJPY", "generated_at": now.isoformat(), "interval": "1h", "period": "5d", "candle_time": "d", "direction": "bullish", "notification_delivered": True, "outcome": {"status": "resolved", "resolved_at": (now - timedelta(hours=25)).isoformat(), "success": True}},
         ]
         with patch("app.signal_journal._read_state", return_value={"signals": entries}):
             stats = signal_outcome_stats(now=now)
@@ -412,6 +516,7 @@ class StrategyFrameworkTests(unittest.TestCase):
                     "candle_time": f"2026-01-01T{index:02d}:00:00Z",
                     "generated_at": f"2026-02-01T{index:02d}:00:00Z",
                     "direction": "bullish",
+                    "notification_delivered": True,
                     "entry_price": 1.0,
                     "risk": {"stop_loss": 0.99, "risk_reward": 1.5},
                     "outcome": {"status": "resolved", "success": True, "label": "take_profit_1"},
