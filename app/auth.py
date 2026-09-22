@@ -16,12 +16,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
 from app.models import CreateUserRequest, LoginRequest, UpdateUserRequest, UserPublic
-from app.persistence import atomic_write_json, file_lock
+from app.persistence import atomic_write_json, file_lock, read_json
 
 
 security = HTTPBearer(auto_error=False)
 _lock = threading.Lock()
-_login_attempts: dict[str, list[datetime]] = {}
 _MAX_LOGIN_ATTEMPTS = 5
 _LOGIN_WINDOW = timedelta(minutes=15)
 
@@ -35,16 +34,12 @@ def _state_path() -> Path:
 
 
 def _read_state() -> dict[str, list[dict[str, Any]]]:
-    path = _state_path()
-    if not path.exists():
-        return {"users": []}
-    try:
-        with path.open("r", encoding="utf-8") as file:
-            state = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return {"users": []}
+    state = read_json(_state_path(), {"users": []})
     users = state.get("users")
-    normalized_state = {"users": users if isinstance(users, list) else []}
+    normalized_state = {
+        "users": users if isinstance(users, list) else [],
+        "login_attempts": dict(state.get("login_attempts") or {}),
+    }
     _coerce_single_admin(normalized_state)
     return normalized_state
 
@@ -171,20 +166,25 @@ def bootstrap_configured_users() -> None:
         _write_state(state)
 
 
-def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]:
+def login_or_create_admin(payload: LoginRequest, client_id: str = "unknown") -> tuple[str, UserPublic, bool]:
+    settings = get_settings()
     username = _normalize_username(payload.username)
     timestamp_dt = _now()
     timestamp = timestamp_dt.isoformat()
 
     with _lock, file_lock(_state_path()):
-        recent_attempts = [attempt for attempt in _login_attempts.get(username, []) if timestamp_dt - attempt < _LOGIN_WINDOW]
-        _login_attempts[username] = recent_attempts
-        if len(recent_attempts) >= _MAX_LOGIN_ATTEMPTS:
-            raise HTTPException(status_code=429, detail="Too many login attempts; try again later")
         state = _read_state()
+        attempts = dict(state.get("login_attempts") or {})
+        keys = (f"{client_id}:{username}", f"{client_id}:*")
+        for key in keys:
+            attempts[key] = [value for value in attempts.get(key, []) if timestamp_dt - _parse_time(value) < _LOGIN_WINDOW]
+        if any(len(attempts[key]) >= _MAX_LOGIN_ATTEMPTS for key in keys):
+            raise HTTPException(status_code=429, detail="Too many login attempts; try again later")
         setup_admin = False
 
         if not state["users"]:
+            if settings.environment.lower() == "production" and not settings.allow_initial_admin_setup:
+                raise HTTPException(status_code=503, detail="Initial administrator setup is disabled")
             user = {
                 "id": str(uuid4()),
                 "username": username,
@@ -201,7 +201,10 @@ def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]
         else:
             user = _find_user(state, username)
             if not user or not _verify_password(payload.password, str(user.get("password_hash", ""))):
-                _login_attempts[username].append(timestamp_dt)
+                for key in keys:
+                    attempts[key].append(timestamp)
+                state["login_attempts"] = attempts
+                _write_state(state)
                 raise HTTPException(status_code=401, detail="Invalid username or password")
             if not user.get("is_active", True):
                 raise HTTPException(status_code=403, detail="User access is disabled")
@@ -209,9 +212,17 @@ def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]
             user["updated_at"] = timestamp
             _write_state(state)
 
-        _login_attempts.pop(username, None)
+        for key in keys:
+            attempts.pop(key, None)
+        state["login_attempts"] = attempts
+        _write_state(state)
         public = _public_user(user)
         return create_token(public), public, setup_admin
+
+
+def _parse_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
 def _sign(payload: str) -> str:

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier
@@ -28,6 +28,9 @@ app = FastAPI(
     title="Forex Signal Bot",
     description="Forex and gold candlestick signal API for bullish, bearish, and neutral trade ideas.",
     version="1.0.0",
+    docs_url=None if settings.environment.lower() == "production" else "/docs",
+    redoc_url=None if settings.environment.lower() == "production" else "/redoc",
+    openapi_url=None if settings.environment.lower() == "production" else "/openapi.json",
 )
 
 app.add_middleware(
@@ -37,6 +40,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 @app.on_event("startup")
@@ -61,12 +75,14 @@ def worker_health() -> dict:
 
 @app.get("/auth/setup")
 def auth_setup() -> dict[str, bool]:
-    return {"needs_admin": not users_exist()}
+    return {"needs_admin": settings.environment.lower() != "production" and not users_exist()}
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-def login(payload: LoginRequest) -> AuthResponse:
-    token, user, setup_admin = login_or_create_admin(payload)
+def login(payload: LoginRequest, request: Request) -> AuthResponse:
+    forwarded_for = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    client_id = forwarded_for or (request.client.host if request.client else "unknown")
+    token, user, setup_admin = login_or_create_admin(payload, client_id=client_id)
     return AuthResponse(token=token, user=user, setup_admin=setup_admin)
 
 

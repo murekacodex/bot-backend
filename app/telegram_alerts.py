@@ -11,7 +11,7 @@ from urllib import parse, request
 
 from app.config import get_settings
 from app.models import Signal
-from app.persistence import atomic_write_json, file_lock
+from app.persistence import atomic_write_json, file_lock, read_json
 from app.telegram_assistant import reset_conversation, start_assistant_task
 
 
@@ -29,7 +29,7 @@ def _api_call(method: str, payload: dict) -> dict:
 def _auth_state() -> dict:
     path = Path(get_settings().telegram_auth_state_path)
     try:
-        state = json.loads(path.read_text()) if path.exists() else {}
+        state = read_json(path, {})
         state.setdefault("authorized", [])
         state.setdefault("pending", {})
         state.setdefault("offset", 0)
@@ -202,7 +202,7 @@ def _alert_scope(signal: Signal) -> str:
 
 def _read_alert_state(path: Path) -> dict:
     try:
-        state = json.loads(path.read_text()) if path.exists() else {}
+        state = read_json(path, {})
     except (OSError, json.JSONDecodeError):
         state = {}
     state["sent"] = list(state.get("sent") or [])

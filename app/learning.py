@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.models import ModelSignal
-from app.persistence import atomic_write_json, file_lock
+from app.persistence import atomic_write_json, file_lock, read_json
 
 
 def _sigmoid(value: float) -> float:
@@ -40,12 +40,7 @@ class AdaptiveSignalModel:
         }
 
     def _load_state(self) -> dict:
-        if not self.path.exists():
-            return self._default_state()
-        try:
-            payload = json.loads(self.path.read_text())
-        except Exception:
-            return self._default_state()
+        payload = read_json(self.path, self._default_state())
         state = self._default_state()
         loaded = payload if isinstance(payload, dict) else {}
         state.update(loaded)

@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.market_data import fetch_candles
 from app.markets import get_market
 from app.models import HistoricalEdge, Signal, SignalLogEntry, SignalOutcome, SignalOutcomeStats
-from app.persistence import atomic_write_json, file_lock
+from app.persistence import atomic_write_json, file_lock, read_json
 
 
 _lock = threading.Lock()
@@ -40,14 +40,7 @@ def _default_state() -> dict[str, list[dict[str, Any]]]:
 
 
 def _read_state() -> dict[str, list[dict[str, Any]]]:
-    path = _state_path()
-    if not path.exists():
-        return _default_state()
-    try:
-        with path.open("r", encoding="utf-8") as file:
-            state = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return _default_state()
+    state = read_json(_state_path(), _default_state())
     signals = state.get("signals") if isinstance(state, dict) else None
     return {"signals": signals if isinstance(signals, list) else []}
 

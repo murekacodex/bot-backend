@@ -13,6 +13,8 @@ ANALYSIS_TIMEFRAMES = {
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
+
     cors_origins: str = Field(
         default="http://localhost:5173,https://bot-frontend-sooty.vercel.app",
         alias="CORS_ORIGINS",
@@ -46,11 +48,12 @@ class Settings(BaseSettings):
     auth_secret_key: str = Field(default="change-this-auth-secret", alias="AUTH_SECRET_KEY")
     environment: str = Field(default="development", alias="ENVIRONMENT")
     account_currency: str = Field(default="USD", alias="ACCOUNT_CURRENCY")
-    auth_token_ttl_hours: int = Field(default=24, alias="AUTH_TOKEN_TTL_HOURS")
+    auth_token_ttl_hours: int = Field(default=8, alias="AUTH_TOKEN_TTL_HOURS")
     bootstrap_admin_username: str | None = Field(default=None, alias="BOOTSTRAP_ADMIN_USERNAME")
     bootstrap_admin_password: str | None = Field(default=None, alias="BOOTSTRAP_ADMIN_PASSWORD")
     bootstrap_user_username: str | None = Field(default=None, alias="BOOTSTRAP_USER_USERNAME")
     bootstrap_user_password: str | None = Field(default=None, alias="BOOTSTRAP_USER_PASSWORD")
+    allow_initial_admin_setup: bool = Field(default=False, alias="ALLOW_INITIAL_ADMIN_SETUP")
     risk_account_balance: float = Field(default=1000.0, alias="RISK_ACCOUNT_BALANCE")
     risk_percent: float = Field(default=1.0, alias="RISK_PERCENT")
     max_stop_atr: float = Field(default=2.0, alias="MAX_STOP_ATR")

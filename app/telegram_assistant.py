@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib import error, request
 
 from app.config import get_settings
-from app.persistence import atomic_write_json, file_lock
+from app.persistence import atomic_write_json, file_lock, read_json
 
 
 _active_chats: set[str] = set()
@@ -47,7 +47,7 @@ def _api_call(method: str, path: str, payload: dict | None = None) -> dict:
 def _state() -> dict:
     path = Path(get_settings().telegram_assistant_state_path)
     try:
-        return json.loads(path.read_text()) if path.exists() else {"conversations": {}}
+        return read_json(path, {"conversations": {}})
     except (OSError, json.JSONDecodeError):
         return {"conversations": {}}
 
