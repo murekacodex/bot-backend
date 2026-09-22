@@ -1,0 +1,24 @@
+{
+  "users": [
+    {
+      "created_at": "2026-09-09T18:48:40.362079+00:00",
+      "id": "4e4ec131-7392-4571-85c9-ea66c118514c",
+      "is_active": true,
+      "is_admin": true,
+      "last_login_at": "2026-09-12T14:49:03.617682+00:00",
+      "password_hash": "6f44de5403ab950c5343e0415099ba1e$7c1e51d173a5307e4a2087d4027fd17c1a6fd43955b253c7a3dae7d1f2bd4af6",
+      "updated_at": "2026-09-12T14:49:03.617682+00:00",
+      "username": "admin"
+    },
+    {
+      "created_at": "2026-09-11T05:18:28.601700+00:00",
+      "id": "5069b34a-9fb3-465a-8882-a8545407fb82",
+      "is_active": true,
+      "is_admin": false,
+      "last_login_at": "2026-09-22T11:49:46.345340+00:00",
+      "password_hash": "8fab14786ba5460255c8d40ec6929bb8$726e1eea90fec24eab77510928e8a49bad100cd1804fb8761400e9fb8ec748d7",
+      "updated_at": "2026-09-22T11:49:46.345340+00:00",
+      "username": "karani"
+    }
+  ]
+}
