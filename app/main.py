@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier
-from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
+from app.auth import admin_user, bootstrap_configured_users, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
 from app.config import ANALYSIS_TIMEFRAMES, get_settings
 from app.learning import AdaptiveSignalModel
 from app.market_data import dataframe_to_candles, fetch_candles
@@ -41,6 +41,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def start_integrations() -> None:
+    bootstrap_configured_users()
     start_telegram_poller()
 
 
@@ -345,4 +346,3 @@ def signal(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-

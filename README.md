@@ -155,6 +155,10 @@ The first successful `/auth/login` request creates the initial admin user when n
 After that, users must log in and send `Authorization: Bearer <token>` to access market data and signals.
 Only the initial admin account can be an admin. Admins can manage normal users with `/users` and `/users/{user_id}`, including enabling or disabling access.
 
+For Heroku deployments that use an ephemeral filesystem, set all four `BOOTSTRAP_ADMIN_USERNAME`,
+`BOOTSTRAP_ADMIN_PASSWORD`, `BOOTSTRAP_USER_USERNAME`, and `BOOTSTRAP_USER_PASSWORD` config vars.
+They seed the admin and normal user at startup without placing credentials in Git.
+
 ## Signal Journal
 
 Generated API and worker signals are persisted to `SIGNAL_LOG_PATH`.

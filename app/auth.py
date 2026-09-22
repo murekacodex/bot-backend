@@ -113,6 +113,64 @@ def users_exist() -> bool:
         return bool(_read_state()["users"])
 
 
+def bootstrap_configured_users() -> None:
+    """Create or repair deployment-configured accounts without committing credentials."""
+    settings = get_settings()
+    if not all((
+        settings.bootstrap_admin_username,
+        settings.bootstrap_admin_password,
+        settings.bootstrap_user_username,
+        settings.bootstrap_user_password,
+    )):
+        return
+
+    admin_username = _normalize_username(settings.bootstrap_admin_username)
+    user_username = _normalize_username(settings.bootstrap_user_username)
+    if admin_username == user_username:
+        raise RuntimeError("Bootstrap admin and user usernames must be different")
+
+    timestamp = _now().isoformat()
+    with _lock, file_lock(_state_path()):
+        state = _read_state()
+        admin = _find_user(state, admin_username)
+        if admin is None:
+            if state["users"]:
+                raise RuntimeError("Configured bootstrap admin is missing from an existing user store")
+            admin = {
+                "id": str(uuid4()),
+                "username": admin_username,
+                "password_hash": _hash_password(settings.bootstrap_admin_password),
+                "is_admin": True,
+                "is_active": True,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "last_login_at": None,
+            }
+            state["users"].append(admin)
+        else:
+            admin["password_hash"] = _hash_password(settings.bootstrap_admin_password)
+            admin["is_active"] = True
+            admin["updated_at"] = timestamp
+
+        user = _find_user(state, user_username)
+        if user is None:
+            state["users"].append({
+                "id": str(uuid4()),
+                "username": user_username,
+                "password_hash": _hash_password(settings.bootstrap_user_password),
+                "is_admin": False,
+                "is_active": True,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "last_login_at": None,
+            })
+        elif not user.get("is_admin"):
+            user["password_hash"] = _hash_password(settings.bootstrap_user_password)
+            user["is_active"] = True
+            user["updated_at"] = timestamp
+        _write_state(state)
+
+
 def login_or_create_admin(payload: LoginRequest) -> tuple[str, UserPublic, bool]:
     username = _normalize_username(payload.username)
     timestamp_dt = _now()
