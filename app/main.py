@@ -1,10 +1,7 @@
-import threading
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.analysis import FOCUS_MARKETS, analyze_market, trade_candidate_tier
 from app.auth import admin_user, create_user, current_user, delete_user, list_users, login_or_create_admin, update_user, users_exist
@@ -349,14 +346,3 @@ def signal(
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-
-if settings.enable_background_worker:
-    from app.bot import main as worker_main
-
-    @app.on_event("startup")
-    def start_background_worker() -> None:
-        threading.Thread(target=worker_main, name="signal-worker", daemon=True).start()
-
-
-if settings.static_dir and Path(settings.static_dir).is_dir():
-    app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="frontend")

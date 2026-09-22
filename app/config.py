@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     filter_closed_markets: bool = Field(default=True, alias="FILTER_CLOSED_MARKETS")
     enable_learning: bool = Field(default=True, alias="ENABLE_LEARNING")
     enable_background_worker: bool = Field(default=False, alias="ENABLE_BACKGROUND_WORKER")
-    static_dir: str | None = Field(default=None, alias="STATIC_DIR")
     enable_session_suggestions: bool = Field(default=True, alias="ENABLE_SESSION_SUGGESTIONS")
     auto_dst_sessions: bool = Field(default=True, alias="AUTO_DST_SESSIONS")
     session_timezone: str = Field(default="Africa/Nairobi", alias="SESSION_TIMEZONE")

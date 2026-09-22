@@ -1,6 +1,6 @@
 # Forex Signal Bot Backend
 
-FastAPI service that fetches forex and gold candles, analyzes indicators and candlestick patterns, and exposes signal endpoints for a React UI.
+Backend-only FastAPI service that fetches forex and gold candles, analyzes indicators and candlestick patterns, and exposes signal endpoints.
 
 ## Local Development
 
@@ -12,6 +12,20 @@ uvicorn app.main:app --reload
 ```
 
 Open `http://localhost:8000/docs`.
+
+## Heroku deployment
+
+This repository deploys as a backend-only FastAPI service. Its `Procfile`
+defines a `web` API process and a separate `worker` process for scheduled
+market scans and Telegram alerts.
+
+Set production secrets with `heroku config:set`, deploy, then scale the process
+types with `heroku ps:scale web=1 worker=1`. Keep
+`ENABLE_BACKGROUND_WORKER=false` because the worker is a dedicated process.
+
+Heroku's filesystem is ephemeral. Restore the AWS data archive into durable
+storage before cutover; otherwise user, journal, learning, and Telegram
+de-duplication state will reset after a dyno restart.
 
 ## AWS deployment
 

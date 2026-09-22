@@ -1,0 +1,16 @@
+{
+  "name": "forex-signal-bot-backend",
+  "description": "Backend-only FastAPI service and Telegram signal worker.",
+  "formation": {
+    "web": { "quantity": 1, "size": "basic" },
+    "worker": { "quantity": 1, "size": "basic" }
+  },
+  "env": {
+    "ENVIRONMENT": { "value": "production" },
+    "ENABLE_BACKGROUND_WORKER": { "value": "false" },
+    "AUTH_SECRET_KEY": { "required": true },
+    "TELEGRAM_BOT_TOKEN": { "required": true },
+    "TELEGRAM_CHAT_ID": { "required": true },
+    "CORS_ORIGINS": { "required": false }
+  }
+}
