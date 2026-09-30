@@ -23,23 +23,9 @@ Set production secrets with `heroku config:set`, deploy, then scale the process
 types with `heroku ps:scale web=1 worker=1`. Keep
 `ENABLE_BACKGROUND_WORKER=false` because the worker is a dedicated process.
 
-Heroku's filesystem is ephemeral. Restore the AWS data archive into durable
-storage before cutover; otherwise user, journal, learning, and Telegram
-de-duplication state will reset after a dyno restart.
-
-## AWS deployment
-
-The repository root contains a Docker Compose deployment for a dedicated AWS
-Lightsail instance. It runs the API, learner worker, and frontend together. The
-`bot-data` volume keeps authentication, model, and journal state across container
-restarts, and state writes use inter-process locks.
-
-Copy `.env.production.example` to `.env.production`, generate a unique
-`AUTH_SECRET_KEY`, set the public origin, then run:
-
-```console
-docker compose up -d --build
-```
+Heroku's filesystem is ephemeral. Configure `DATABASE_URL` (Heroku Postgres)
+so user, journal, learning, and Telegram de-duplication state survives dyno
+restarts.
 
 Production startup fails if the default authentication secret is still present.
 

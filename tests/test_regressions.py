@@ -37,7 +37,7 @@ from app.research import monte_carlo, performance_metrics
 from app.session import market_is_open
 from app.signal_journal import _resolve_entry, signal_outcome_stats
 from app.signal_journal import rolling_performance_edge
-from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, remove_outdated_alerts
+from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, remove_outdated_alerts, telegram_polling_enabled
 from app.telegram_assistant import _completed_text
 
 
@@ -266,6 +266,12 @@ class FocusedCandidateTests(unittest.TestCase):
 
 
 class TelegramAlertTests(unittest.TestCase):
+    def test_owner_polling_needs_only_a_bot_token(self):
+        with patch("app.telegram_alerts.get_settings", return_value=SimpleNamespace(telegram_bot_token="token")):
+            self.assertTrue(telegram_polling_enabled())
+        with patch("app.telegram_alerts.get_settings", return_value=SimpleNamespace(telegram_bot_token=None)):
+            self.assertFalse(telegram_polling_enabled())
+
     def test_password_hash_check(self):
         import hashlib
         salt = "00112233445566778899aabbccddeeff"

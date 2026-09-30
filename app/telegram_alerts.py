@@ -26,6 +26,15 @@ def _api_call(method: str, payload: dict) -> dict:
         return json.loads(response.read())
 
 
+def telegram_polling_enabled() -> bool:
+    """Incoming owner commands need only a bot token.
+
+    Username/password/keyword settings are optional: they gate self-service
+    access for additional chats, not the configured owner chat.
+    """
+    return bool(get_settings().telegram_bot_token)
+
+
 def _auth_state() -> dict:
     path = Path(get_settings().telegram_auth_state_path)
     try:
@@ -169,8 +178,7 @@ def _handle_update(update: dict, state: dict) -> None:
 
 
 def poll_telegram_updates() -> None:
-    settings = get_settings()
-    if not all((settings.telegram_bot_token, settings.telegram_access_username, settings.telegram_access_password_hash, settings.telegram_access_keyword_hash)):
+    if not telegram_polling_enabled():
         return
     while True:
         state = _auth_state()
@@ -180,7 +188,10 @@ def poll_telegram_updates() -> None:
                 state["offset"] = int(update["update_id"]) + 1
                 _handle_update(update, state)
                 _save_auth_state(state)
-        except Exception:
+        except Exception as exc:
+            # Do not silently disable the bot when Telegram rejects polling
+            # (for example, a webhook is still configured or the token changed).
+            print(json.dumps({"telegram_poll_error": str(exc)}), flush=True)
             time.sleep(5)
 
 
