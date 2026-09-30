@@ -14,6 +14,7 @@ from app.signal_journal import record_signal, resolve_signal_outcomes
 from app.telegram_alerts import (
     _alert_key,
     _alert_scope,
+    active_alert_tier,
     alert_was_sent,
     remove_outdated_alerts,
     send_market_update,
@@ -79,7 +80,10 @@ def run_once() -> list[dict]:
                 tier = trade_candidate_tier(signal)
                 delivered = False
                 if tier == "entry_ready":
-                    setup_sent = alert_was_sent(signal, tier="watchlist")
+                    setup_sent = (
+                        active_alert_tier(signal) == "watchlist"
+                        or alert_was_sent(signal, tier="watchlist")
+                    )
                     if not setup_sent:
                         candidate_count += 1
                         active_alert_keys.add(_alert_key(signal, tier="watchlist"))

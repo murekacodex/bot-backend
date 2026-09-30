@@ -229,6 +229,21 @@ def alert_was_sent(signal: Signal, tier: str) -> bool:
     return _alert_key(signal, tier=tier) in state["sent"]
 
 
+def active_alert_tier(signal: Signal) -> str | None:
+    """Return the currently active lifecycle stage for a market/timeframe.
+
+    A setup commonly confirms on a later completed candle, so its timestamp
+    changes between WATCHLIST and ENTRY READY.  The active alert scope—not the
+    old candle timestamp—is the reliable way to preserve that progression.
+    """
+    state_path = Path(get_settings().telegram_alert_state_path)
+    with file_lock(state_path):
+        state = _read_alert_state(state_path)
+    key = str(state["active_alerts"].get(_alert_scope(signal), {}).get("key") or "")
+    tier, _, _ = key.partition(":")
+    return tier if tier in {"watchlist", "entry_ready"} else None
+
+
 def _delete_alert_messages(messages: list[dict]) -> None:
     for message in messages:
         chat_id = message.get("chat_id")

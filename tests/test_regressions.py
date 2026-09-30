@@ -38,7 +38,7 @@ from app.research import monte_carlo, performance_metrics
 from app.session import market_is_open
 from app.signal_journal import _resolve_entry, signal_outcome_stats
 from app.signal_journal import rolling_performance_edge
-from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, remove_outdated_alerts, telegram_polling_enabled
+from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, active_alert_tier, remove_outdated_alerts, telegram_polling_enabled
 from app.telegram_assistant import _completed_text
 
 
@@ -296,6 +296,26 @@ class FocusedCandidateTests(unittest.TestCase):
 
 
 class TelegramAlertTests(unittest.TestCase):
+    def test_active_watchlist_promotes_across_completed_candles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "telegram_alerts.json"
+            state_path.write_text(
+                json.dumps({
+                    "active_alerts": {
+                        "EURUSD:4h": {
+                            "key": "watchlist:EURUSD:4h:bullish:2026-01-01T08:00:00+00:00",
+                        }
+                    }
+                })
+            )
+            signal = Signal.model_construct(
+                market=Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex"),
+                interval="4h", timestamp="2026-01-01T12:00:00+00:00",
+            )
+            settings = SimpleNamespace(telegram_alert_state_path=str(state_path))
+            with patch("app.telegram_alerts.get_settings", return_value=settings):
+                self.assertEqual(active_alert_tier(signal), "watchlist")
+
     def test_owner_polling_needs_only_a_bot_token(self):
         with patch("app.telegram_alerts.get_settings", return_value=SimpleNamespace(telegram_bot_token="token")):
             self.assertTrue(telegram_polling_enabled())
