@@ -323,7 +323,9 @@ def trade_candidate_tier(signal: Signal) -> str | None:
     if signal.market.code not in FOCUS_MARKETS or signal.direction == "neutral" or not signal.risk:
         return None
     settings = get_settings()
-    if signal.interval not in ANALYSIS_TIMEFRAMES or signal.confidence < settings.minimum_alert_confidence:
+    if signal.interval not in ANALYSIS_TIMEFRAMES or signal.confidence < settings.minimum_watchlist_confidence:
+        return None
+    if getattr(signal.market, "is_open", None) is False:
         return None
     indicators = getattr(signal, "indicators", {}) or {}
     if not indicators.get("displacement_confirmed") or indicators.get("retest_target") is None:
@@ -332,16 +334,22 @@ def trade_candidate_tier(signal: Signal) -> str | None:
     max_atr_ratio = 0.015 if signal.market.category == "metal" else 0.002
     if float(features.get("atr_ratio", float("inf"))) > max_atr_ratio:
         return None
-    if signal.session is None or signal.session.alignment != "aligned":
+    if signal.session is None:
         return None
     higher = signal.timeframes.get("higher")
     lower = signal.timeframes.get("lower")
     if higher is None or higher.direction != signal.direction:
         return None
-    if lower is not None and lower.direction != signal.direction:
+    # A neutral lower timeframe is acceptable for early monitoring, but an
+    # opposite lower-timeframe signal invalidates both alert tiers.
+    if lower is not None and lower.direction not in {signal.direction, "neutral"}:
         return None
-    if not set(signal.session.active_sessions).intersection(signal.session.preferred_sessions):
-        return None
+    strict_entry_context = (
+        signal.confidence >= settings.minimum_alert_confidence
+        and signal.session.alignment == "aligned"
+        and bool(set(signal.session.active_sessions).intersection(signal.session.preferred_sessions))
+        and (lower is None or lower.direction == signal.direction)
+    )
     selected = next(
         (
             evaluation for evaluation in (getattr(signal, "strategy_evaluations", None) or [])
@@ -351,6 +359,8 @@ def trade_candidate_tier(signal: Signal) -> str | None:
     )
     if selected:
         if selected.status == "entry_ready":
+            if not strict_entry_context:
+                return "watchlist"
             if (
                 getattr(signal, "historical_edge", None)
                 and signal.historical_edge.sufficient_evidence
@@ -386,7 +396,7 @@ def trade_candidate_tier(signal: Signal) -> str | None:
     if not trend_aligned:
         return None
     strongest_pattern = max(pattern.strength for pattern in directional_patterns)
-    if abs(signal.score) >= 3.0 and strongest_pattern >= 65:
+    if abs(signal.score) >= 3.0 and strongest_pattern >= 65 and strict_entry_context:
         return "entry_ready"
     return "watchlist"
 

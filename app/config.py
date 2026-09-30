@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     )
     default_interval: str = Field(default="4h", alias="DEFAULT_INTERVAL")
     default_period: str = Field(default="1mo", alias="DEFAULT_PERIOD")
-    cache_ttl_seconds: int = Field(default=120, alias="CACHE_TTL_SECONDS")
-    bot_poll_seconds: int = Field(default=900, alias="BOT_POLL_SECONDS")
+    # Poll frequently for live-price confirmation and alert lifecycle changes.
+    # Completed 4h/daily candles are still enforced by market_data, so this
+    # does not turn an in-progress swing candle into a trade signal.
+    cache_ttl_seconds: int = Field(default=45, alias="CACHE_TTL_SECONDS")
+    bot_poll_seconds: int = Field(default=60, alias="BOT_POLL_SECONDS")
     enable_news_analysis: bool = Field(default=True, alias="ENABLE_NEWS_ANALYSIS")
     news_cache_ttl_seconds: int = Field(default=900, alias="NEWS_CACHE_TTL_SECONDS")
     news_lookback_hours: int = Field(default=24, alias="NEWS_LOOKBACK_HOURS")
@@ -82,6 +85,7 @@ class Settings(BaseSettings):
     openai_background_poll_seconds: int = Field(default=3, alias="OPENAI_BACKGROUND_POLL_SECONDS")
     openai_background_timeout_seconds: int = Field(default=900, alias="OPENAI_BACKGROUND_TIMEOUT_SECONDS")
     telegram_market_update_hours: int = Field(default=0, alias="TELEGRAM_MARKET_UPDATE_HOURS")
+    minimum_watchlist_confidence: int = Field(default=65, alias="MINIMUM_WATCHLIST_CONFIDENCE")
     minimum_alert_confidence: int = Field(default=72, alias="MINIMUM_ALERT_CONFIDENCE")
     model_resolved_retention: int = Field(default=5000, alias="MODEL_RESOLVED_RETENTION")
     signal_log_retention: int = Field(default=10000, alias="SIGNAL_LOG_RETENTION")

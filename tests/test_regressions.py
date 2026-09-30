@@ -180,6 +180,23 @@ class TimeframeValidationTests(unittest.TestCase):
         )
         self.assertEqual(trade_candidate_tier(signal), "watchlist")
 
+    def test_watchlist_allows_neutral_lower_timeframe_and_nonpreferred_open_session(self):
+        signal = SimpleNamespace(
+            market=SimpleNamespace(code="EURUSD", category="forex", is_open=True), interval="4h",
+            direction="bullish", confidence=65, risk=SimpleNamespace(), features={"atr_ratio": 0.001},
+            indicators={"displacement_confirmed": True, "retest_target": 1.1},
+            session=SimpleNamespace(alignment="off_session", active_sessions=["asia"], preferred_sessions=["london"]),
+            timeframes={
+                "higher": SimpleNamespace(direction="bullish"),
+                "lower": SimpleNamespace(direction="neutral"),
+            },
+            strategy_evaluations=[SimpleNamespace(name="trend_pullback", direction="bullish", status="entry_ready")],
+            selected_strategy="trend_pullback",
+        )
+        settings = SimpleNamespace(minimum_watchlist_confidence=65, minimum_alert_confidence=72)
+        with patch("app.analysis.get_settings", return_value=settings):
+            self.assertEqual(trade_candidate_tier(signal), "watchlist")
+
 
 class InstitutionalRetestTests(unittest.TestCase):
     def test_bullish_displacement_marks_broken_high_as_retest_target(self):

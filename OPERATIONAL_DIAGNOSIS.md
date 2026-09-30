@@ -49,4 +49,4 @@ Some older tests assume file-backed state. Production uses Postgres, so those te
 
 ## Current polling policy
 
-The worker is configured to start scans every 60 seconds and cache market data for 45 seconds. Because each scan itself takes time and only completed 4-hour/daily candles drive strategy changes, this improves responsiveness without treating an in-progress swing candle as a valid signal.
+The worker defaults to starting scans every 60 seconds and caches market data for 45 seconds. The production environment should set `BOT_POLL_SECONDS=60` and `CACHE_TTL_SECONDS=45` explicitly as well. Because each scan itself takes time and only completed 4-hour/daily candles drive strategy changes, this improves responsiveness without treating an in-progress swing candle as a valid signal. Most scans will therefore see unchanged 4-hour/daily analysis; their value is live-price confirmation, alert lifecycle maintenance, and operational visibility.

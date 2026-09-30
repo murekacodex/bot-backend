@@ -79,7 +79,8 @@ Environment variables:
 - `OPENAI_BACKGROUND_POLL_SECONDS`: interval for checking background response completion.
 - `OPENAI_BACKGROUND_TIMEOUT_SECONDS`: maximum time to wait before reporting a timeout.
 - `TELEGRAM_MARKET_UPDATE_HOURS`: minimum interval between no-setup market updates; set to `0` to disable.
-- `MINIMUM_ALERT_CONFIDENCE`: minimum calibrated confidence required for an automated swing-trade alert (default `72`).
+- `MINIMUM_WATCHLIST_CONFIDENCE`: minimum calibrated confidence for a Telegram Watchlist alert (default `65`).
+- `MINIMUM_ALERT_CONFIDENCE`: minimum calibrated confidence for a Telegram Entry Ready alert (default `72`).
 - `METAAPI_TOKEN`, `METAAPI_ACCOUNT_ID`, `METAAPI_REGION`: optional primary broker quote source.
 - `REQUIRE_LIVE_PRICE_FOR_ALERTS`: block alerts unless a fresh live timing quote is available.
 - `ENABLE_YAHOO_LIVE_FALLBACK`: use the latest Yahoo 1-minute candle for timing when MetaApi is unavailable.
