@@ -38,7 +38,7 @@ from app.research import monte_carlo, performance_metrics
 from app.session import market_is_open
 from app.signal_journal import _resolve_entry, signal_outcome_stats
 from app.signal_journal import rolling_performance_edge
-from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, active_alert_tier, remove_outdated_alerts, telegram_polling_enabled
+from app.telegram_alerts import _alert_key, _copy_keyboard, _message, _password_matches, active_alert_tier, remove_outdated_alerts, send_market_update, telegram_polling_enabled
 from app.telegram_assistant import _completed_text
 
 
@@ -403,6 +403,25 @@ class TelegramAlertTests(unittest.TestCase):
             self.assertEqual(removed, 0)
             api_call.assert_not_called()
             self.assertEqual(json.loads(state_path.read_text())["market_update_messages"][0]["message_id"], 99)
+
+    def test_rate_limit_does_not_suppress_a_missing_market_update_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "telegram_alerts.json"
+            state_path.write_text(json.dumps({
+                "last_market_update": datetime.now(timezone.utc).isoformat(),
+                "market_update_messages": [],
+            }))
+            settings = SimpleNamespace(
+                telegram_bot_token="token",
+                telegram_market_update_hours=1,
+                telegram_alert_state_path=str(state_path),
+                telegram_chat_id="7",
+                telegram_auth_state_path=str(Path(directory) / "telegram_auth.json"),
+            )
+            signal = Signal.model_construct(market=Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex"), direction="bullish", score=3.0, confidence=70)
+            with patch("app.telegram_alerts.get_settings", return_value=settings), patch("app.telegram_alerts._api_call", return_value={"ok": True, "result": {"message_id": 100}}) as api_call:
+                self.assertTrue(send_market_update([signal]))
+            self.assertEqual(api_call.call_args.args[0], "sendMessage")
 
 
 class OutcomePathTests(unittest.TestCase):

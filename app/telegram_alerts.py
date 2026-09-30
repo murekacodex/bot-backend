@@ -427,10 +427,14 @@ def send_market_update(signals: list[Signal]) -> bool:
     with file_lock(state_path):
         state = _read_alert_state(state_path)
         last_value = state.get("last_market_update")
+        has_visible_update = bool(state.get("market_update_messages"))
         if last_value:
             try:
                 last_update = datetime.fromisoformat(str(last_value))
-                if now - last_update < timedelta(hours=settings.telegram_market_update_hours):
+                # A prior release could delete the visible message while
+                # retaining this timestamp. Never let that stale timestamp
+                # keep the chat silent.
+                if has_visible_update and now - last_update < timedelta(hours=settings.telegram_market_update_hours):
                     return False
             except ValueError:
                 pass
