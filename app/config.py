@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-5.4", alias="OPENAI_MODEL")
     openai_background_poll_seconds: int = Field(default=3, alias="OPENAI_BACKGROUND_POLL_SECONDS")
     openai_background_timeout_seconds: int = Field(default=900, alias="OPENAI_BACKGROUND_TIMEOUT_SECONDS")
-    telegram_market_update_hours: int = Field(default=0, alias="TELEGRAM_MARKET_UPDATE_HOURS")
+    telegram_market_update_hours: int = Field(default=1, alias="TELEGRAM_MARKET_UPDATE_HOURS")
     minimum_watchlist_confidence: int = Field(default=65, alias="MINIMUM_WATCHLIST_CONFIDENCE")
     minimum_alert_confidence: int = Field(default=72, alias="MINIMUM_ALERT_CONFIDENCE")
     model_resolved_retention: int = Field(default=5000, alias="MODEL_RESOLVED_RETENTION")

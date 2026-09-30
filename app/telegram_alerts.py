@@ -257,7 +257,12 @@ def _delete_alert_messages(messages: list[dict]) -> None:
 
 
 def remove_outdated_alerts(active_keys: set[str], protected_scopes: set[str] | None = None) -> int:
-    """Delete bot-owned trade alerts that are no longer viable in the current scan."""
+    """Delete only trade alerts that are no longer viable in the current scan.
+
+    Market-update messages intentionally remain visible until the next
+    rate-limited update replaces them. Deleting one merely because a trade
+    alert appeared makes the bot look silent after that trade is resolved.
+    """
     settings = get_settings()
     if not settings.telegram_bot_token:
         return 0
@@ -269,11 +274,9 @@ def remove_outdated_alerts(active_keys: set[str], protected_scopes: set[str] | N
             (scope, alert) for scope, alert in state["active_alerts"].items()
             if str(alert.get("key")) not in active_keys and scope not in protected
         ]
-        market_updates = list(state.get("market_update_messages") or []) if active_keys else []
     for _, alert in outdated:
         _delete_alert_messages(list(alert.get("messages") or []))
-    _delete_alert_messages(market_updates)
-    if not outdated and not market_updates:
+    if not outdated:
         return 0
     with file_lock(state_path):
         state = _read_alert_state(state_path)
@@ -281,8 +284,6 @@ def remove_outdated_alerts(active_keys: set[str], protected_scopes: set[str] | N
             current = state["active_alerts"].get(scope)
             if current and current.get("key") == alert.get("key"):
                 state["active_alerts"].pop(scope, None)
-        if market_updates:
-            state["market_update_messages"] = []
         atomic_write_json(state_path, state)
     return len(outdated)
 

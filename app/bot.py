@@ -40,6 +40,7 @@ def run_once() -> list[dict]:
     signals = []
     analyzed_signals = []
     candidate_count = 0
+    alert_outcomes = {"neutral": 0, "watchlist": 0, "entry_ready": 0, "live_blocked": 0, "delivered": 0}
     active_alert_keys: set[str] = set()
     protected_alert_scopes: set[str] = set()
     for market in [attach_market_status(market) for market in MARKETS.values()]:
@@ -78,6 +79,7 @@ def run_once() -> list[dict]:
                 )
                 analyzed_signals.append(signal)
                 tier = trade_candidate_tier(signal)
+                alert_outcomes[tier or "neutral"] += 1
                 delivered = False
                 if tier == "entry_ready":
                     setup_sent = (
@@ -97,6 +99,7 @@ def run_once() -> list[dict]:
                         else:
                             candidate_count += 1
                             active_alert_keys.add(_alert_key(signal, tier="watchlist"))
+                            alert_outcomes["live_blocked"] += 1
                             signal.warnings.append(live_reason or "Live entry timing did not confirm")
                             if live_reason and ("unavailable" in live_reason.lower() or "stale" in live_reason.lower()):
                                 protected_alert_scopes.add(_alert_scope(signal))
@@ -110,20 +113,25 @@ def run_once() -> list[dict]:
                     alert_tier=tier,
                     notification_delivered=delivered,
                 )
+                if delivered:
+                    alert_outcomes["delivered"] += 1
                 signals.append(signal.model_dump())
             except Exception as exc:
                 signals.append({"market": market.code, "interval": interval, "error": str(exc)})
                 protected_alert_scopes.add(f"{market.code}:{interval}")
     resolve_signal_outcomes()
     remove_outdated_alerts(active_alert_keys, protected_scopes=protected_alert_scopes)
+    market_update_delivered = False
     if analyzed_signals and candidate_count == 0:
-        send_market_update(analyzed_signals)
+        market_update_delivered = send_market_update(analyzed_signals)
     errors = sum(1 for result in signals if "error" in result)
     worker_status.update(
         running=False,
         last_completed_at=datetime.now(timezone.utc).isoformat(),
         generated=len(signals) - errors,
         errors=errors,
+        alert_outcomes=alert_outcomes,
+        market_update_delivered=market_update_delivered,
     )
     return signals
 
@@ -134,7 +142,12 @@ def main() -> None:
         try:
             results = run_once()
             errors = [result for result in results if "error" in result]
-            print(json.dumps({"generated": len(results) - len(errors), "errors": errors}), flush=True)
+            print(json.dumps({
+                "generated": len(results) - len(errors),
+                "errors": errors,
+                "alerts": worker_status.get("alert_outcomes", {}),
+                "market_update_delivered": worker_status.get("market_update_delivered", False),
+            }), flush=True)
         except Exception as exc:
             worker_status.update(running=False, last_error=str(exc))
             print(json.dumps({"error": str(exc)}), flush=True)

@@ -78,7 +78,7 @@ Environment variables:
 - `OPENAI_MODEL`: Responses API model, defaults to `gpt-5.4`.
 - `OPENAI_BACKGROUND_POLL_SECONDS`: interval for checking background response completion.
 - `OPENAI_BACKGROUND_TIMEOUT_SECONDS`: maximum time to wait before reporting a timeout.
-- `TELEGRAM_MARKET_UPDATE_HOURS`: minimum interval between no-setup market updates; set to `0` to disable.
+- `TELEGRAM_MARKET_UPDATE_HOURS`: minimum interval between no-setup market updates; defaults to `1` hour; set to `0` to disable.
 - `MINIMUM_WATCHLIST_CONFIDENCE`: minimum calibrated confidence for a Telegram Watchlist alert (default `65`).
 - `MINIMUM_ALERT_CONFIDENCE`: minimum calibrated confidence for a Telegram Entry Ready alert (default `72`).
 - `METAAPI_TOKEN`, `METAAPI_ACCOUNT_ID`, `METAAPI_REGION`: optional primary broker quote source.

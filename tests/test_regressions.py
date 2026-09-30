@@ -390,6 +390,20 @@ class TelegramAlertTests(unittest.TestCase):
             api_call.assert_called_once_with("deleteMessage", {"chat_id": "7", "message_id": 42})
             self.assertEqual(json.loads(state_path.read_text())["active_alerts"], {})
 
+    def test_keeps_market_update_visible_when_trade_alert_is_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "telegram_alerts.json"
+            state_path.write_text(json.dumps({
+                "active_alerts": {},
+                "market_update_messages": [{"chat_id": "7", "message_id": 99}],
+            }))
+            settings = SimpleNamespace(telegram_bot_token="token", telegram_alert_state_path=str(state_path))
+            with patch("app.telegram_alerts.get_settings", return_value=settings), patch("app.telegram_alerts._api_call") as api_call:
+                removed = remove_outdated_alerts({"watchlist:EURUSD:4h:bullish:example"})
+            self.assertEqual(removed, 0)
+            api_call.assert_not_called()
+            self.assertEqual(json.loads(state_path.read_text())["market_update_messages"][0]["message_id"], 99)
+
 
 class OutcomePathTests(unittest.TestCase):
     def test_take_profit_hit_resolves_before_time_horizon(self):
