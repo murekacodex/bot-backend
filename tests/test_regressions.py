@@ -313,7 +313,10 @@ class TelegramAlertTests(unittest.TestCase):
                 interval="4h", timestamp="2026-01-01T12:00:00+00:00",
             )
             settings = SimpleNamespace(telegram_alert_state_path=str(state_path))
-            with patch("app.telegram_alerts.get_settings", return_value=settings):
+            with (
+                patch("app.telegram_alerts.get_settings", return_value=settings),
+                patch("app.telegram_alerts._read_alert_state", return_value=json.loads(state_path.read_text())),
+            ):
                 self.assertEqual(active_alert_tier(signal), "watchlist")
 
     def test_owner_polling_needs_only_a_bot_token(self):
