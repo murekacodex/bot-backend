@@ -69,7 +69,7 @@ class TimeframeValidationTests(unittest.TestCase):
             patch.object(api, "trade_candidate_tier", return_value=None),
             patch.object(api, "record_signals"),
         ):
-            result = api.signals(all_timeframes=True, include_news=False, _=SimpleNamespace())
+            result = api.signals(all_timeframes=True, category=None, include_news=False, _=SimpleNamespace())
         self.assertEqual(result, [signal])
 
     def test_background_scan_only_covers_swing_timeframes(self):
