@@ -25,6 +25,7 @@ from app.analysis import (
 from app import bot
 from app.config import ANALYSIS_TIMEFRAMES
 from app.learning import AdaptiveSignalModel
+from app import main as api
 from app.main import validate_timeframe
 from app.market_data import completed_candles
 from app.macro import assess_macro
@@ -42,6 +43,35 @@ from app.telegram_assistant import _completed_text
 
 
 class TimeframeValidationTests(unittest.TestCase):
+    def test_dashboard_keeps_market_analysis_when_no_alert_qualifies(self):
+        market = Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex")
+        frame = pd.DataFrame({"close": [1.1]}, index=pd.to_datetime(["2026-01-01T10:00:00Z"]))
+        signal = SimpleNamespace(
+            market=market,
+            interval="4h",
+            period="1mo",
+            timestamp="2026-01-01T10:00:00+00:00",
+            direction="neutral",
+            confidence=50,
+            score=0.0,
+            warnings=[],
+            risk=None,
+            last_candle=SimpleNamespace(close=1.1),
+            features={},
+        )
+        with (
+            patch.object(api, "markets", return_value=[market]),
+            patch.object(api, "ANALYSIS_TIMEFRAMES", {"4h": "1mo"}),
+            patch.object(api, "fetch_candles", return_value=frame),
+            patch.object(api, "timeframe_contexts", return_value=({}, [])),
+            patch.object(api, "analyze_market", return_value=signal),
+            patch.object(api.learner, "register_prediction"),
+            patch.object(api, "trade_candidate_tier", return_value=None),
+            patch.object(api, "record_signals"),
+        ):
+            result = api.signals(all_timeframes=True, include_news=False, _=SimpleNamespace())
+        self.assertEqual(result, [signal])
+
     def test_background_scan_only_covers_swing_timeframes(self):
         self.assertEqual(set(ANALYSIS_TIMEFRAMES), {"4h", "1d"})
 

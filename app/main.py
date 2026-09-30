@@ -215,9 +215,14 @@ def signals(
                     period=selected_period,
                     timestamp=datetime.fromisoformat(signal.timestamp),
                 )
+                # The dashboard is a market-analysis surface, not an alert
+                # inbox.  Returning only Telegram-qualified setups left it
+                # empty most of the time and prevented chart candle requests
+                # altogether.  Keep alert delivery strict, but always expose
+                # the latest analysis for each market and timeframe.
+                output.append(signal)
                 tier = trade_candidate_tier(signal)
                 if tier:
-                    output.append(signal)
                     send_viable_entry_alert(signal, tier=tier)
             except Exception as exc:  # Keep one bad timeframe from hiding other signals.
                 errors.append(f"{market.code} {selected_interval}: {exc}")
