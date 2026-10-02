@@ -319,7 +319,7 @@ class TelegramAlertTests(unittest.TestCase):
             state_path.write_text(
                 json.dumps({
                     "active_alerts": {
-                        "EURUSD:4h": {
+                        "EURUSD:4h:bullish": {
                             "key": "watchlist:EURUSD:4h:bullish:2026-01-01T08:00:00+00:00",
                         }
                     }
@@ -335,6 +335,24 @@ class TelegramAlertTests(unittest.TestCase):
                 patch("app.telegram_alerts._read_alert_state", return_value=json.loads(state_path.read_text())),
             ):
                 self.assertEqual(active_alert_tier(signal), "watchlist")
+
+    def test_opposite_direction_watchlist_does_not_promote_to_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "telegram_alerts.json"
+            state_path.write_text(json.dumps({
+                "active_alerts": {
+                    "EURUSD:4h:bullish": {
+                        "key": "watchlist:EURUSD:4h:bullish:2026-01-01T08:00:00+00:00",
+                    }
+                }
+            }))
+            signal = Signal.model_construct(
+                market=Market(code="EURUSD", symbol="EURUSD=X", name="EUR/USD", category="forex"),
+                interval="4h", direction="bearish", timestamp="2026-01-01T12:00:00+00:00",
+            )
+            settings = SimpleNamespace(telegram_alert_state_path=str(state_path))
+            with patch("app.telegram_alerts.get_settings", return_value=settings):
+                self.assertIsNone(active_alert_tier(signal))
 
     def test_owner_polling_needs_only_a_bot_token(self):
         with patch("app.telegram_alerts.get_settings", return_value=SimpleNamespace(telegram_bot_token="token")):

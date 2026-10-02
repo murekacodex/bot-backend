@@ -23,9 +23,9 @@
 
 `remove_outdated_alerts()` deletes an existing no-setup market update on the next scan. `send_market_update()` then observes the six-hour rate limit and does not replace it. The result is a health message that disappears after roughly one scan.
 
-### Direction is missing from active-alert scope
+### Direction-aware alert lifecycle
 
-Active alerts are keyed by market and timeframe only. A bearish setup can therefore inherit a bullish watchlist for the same market/timeframe. Direction must be included when deciding whether a watchlist may be promoted to entry ready.
+Active alerts are keyed by market, timeframe, and direction, so only a matching watchlist can be promoted to an entry-ready alert.
 
 ### Misleading worker-health endpoint
 

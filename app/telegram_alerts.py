@@ -208,7 +208,12 @@ def _alert_key(signal: Signal, tier: str = "entry_ready") -> str:
 
 
 def _alert_scope(signal: Signal) -> str:
-    return f"{signal.market.code}:{signal.interval}"
+    """Identify one setup lifecycle, including its trade direction.
+
+    A market can have opposing bullish and bearish setups on the same
+    timeframe.  They must not share a WATCHLIST/ENTRY READY lifecycle.
+    """
+    return f"{signal.market.code}:{signal.interval}:{signal.direction}"
 
 
 def _read_alert_state(path: Path) -> dict:
@@ -272,7 +277,14 @@ def remove_outdated_alerts(active_keys: set[str], protected_scopes: set[str] | N
         protected = protected_scopes or set()
         outdated = [
             (scope, alert) for scope, alert in state["active_alerts"].items()
-            if str(alert.get("key")) not in active_keys and scope not in protected
+            if (
+                str(alert.get("key")) not in active_keys
+                and scope not in protected
+                # A scan failure is tracked at market/timeframe level because
+                # it has no reliable direction. Keep either direction alive
+                # until the next successful scan can re-evaluate it.
+                and ":".join(scope.split(":")[:2]) not in protected
+            )
         ]
     for _, alert in outdated:
         _delete_alert_messages(list(alert.get("messages") or []))
