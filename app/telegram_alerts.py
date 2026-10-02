@@ -320,6 +320,7 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
     sessions = " / ".join(part.replace("_", " ").title() for part in signal.session.active_sessions) if signal.session else "Unknown"
     live = getattr(signal, "live_quote", None)
     retest_target = (getattr(signal, "indicators", {}) or {}).get("retest_target")
+    takeover_score = (getattr(signal, "indicators", {}) or {}).get("institutional_takeover_score", 0)
     time_label = signal.timestamp.replace("T", " ").replace("+00:00", " UTC")
     entry_note = (
         "✅ Timing confirmed — verify the quote and spread in your broker before placing any order."
@@ -341,6 +342,7 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
             "└──────────────────────────",
             "",
             f"📌 {strategy}",
+            (f"🏦 Takeover proxy confirmed: {float(takeover_score):.0f}/100 completed-candle conviction" if float(takeover_score or 0) >= 70 else ""),
             f"📊 {regime.trend.title() if regime else 'Unknown'} trend · {regime.volatility.title() if regime else 'Unknown'} volatility",
             f"🧭 Session: {sessions}  |  Confidence: {signal.confidence}%",
             (

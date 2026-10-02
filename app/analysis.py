@@ -129,6 +129,49 @@ def _institutional_retest_setup(data: pd.DataFrame, direction: str, atr: float |
     return decisive_body and decisive_close and displaced, level
 
 
+def _institutional_takeover_proxy(data: pd.DataFrame, atr: float | None) -> tuple[str, float, float | None]:
+    """Score a probable one-sided takeover from completed OHLCV candles.
+
+    It is deliberately a proxy: candle displacement, structure, close quality,
+    and relative volume can suggest aggressive participation but cannot identify
+    institutions or reveal actual order flow.
+    """
+    if len(data) < 22 or not atr or atr <= 0:
+        return "neutral", 0.0, None
+    current = data.iloc[-1]
+    prior = data.iloc[-21:-1]
+    candle_range = max(float(current.high) - float(current.low), 1e-12)
+    body = abs(float(current.close) - float(current.open))
+    volume_ratio = 1.0
+    if "volume" in data and pd.notna(current.get("volume")):
+        median_volume = float(prior.volume.replace(0, np.nan).median())
+        if median_volume > 0:
+            volume_ratio = float(current.volume) / median_volume
+    bullish_level, bearish_level = float(prior.high.max()), float(prior.low.min())
+    bullish = float(current.close) > bullish_level
+    bearish = float(current.close) < bearish_level
+    if not bullish and not bearish:
+        return "neutral", 0.0, None
+    direction = "bullish" if bullish else "bearish"
+    level = bullish_level if bullish else bearish_level
+    close_quality = (
+        (float(current.high) - float(current.close)) / candle_range
+        if bullish else (float(current.close) - float(current.low)) / candle_range
+    )
+    score = 45.0  # completed 20-bar structure break
+    if body >= atr * 0.8:
+        score += 20
+    if candle_range >= atr * 1.2:
+        score += 10
+    if close_quality <= 0.2:
+        score += 10
+    if volume_ratio >= 1.5:
+        score += 15
+    # Do not pretend FX tick-volume is comparable across providers; it is only
+    # a modest confirmation and never mandatory.
+    return direction, min(100.0, score), level
+
+
 def _capped_stop_loss(direction: str, entry: float, raw_stop: float, max_distance: float) -> float:
     if direction == "bullish":
         return max(raw_stop, entry - max_distance)
@@ -490,6 +533,14 @@ def analyze_market(
             score -= 0.45
         reasons.append(f"Lower timeframe {lower_context.interval}: {lower_context.direction} timing")
 
+    atr_hint = _finite(latest.atr)
+    takeover_direction, takeover_score, takeover_level = _institutional_takeover_proxy(data, atr_hint)
+    if takeover_direction != "neutral":
+        score += 1.25 if takeover_direction == "bullish" else -1.25
+        reasons.append(
+            f"Institutional-takeover proxy: {takeover_direction} structure break scored {takeover_score:.0f}/100"
+        )
+
     news_adjustment = _news_score(news, market)
     if news_adjustment:
         score += news_adjustment
@@ -586,7 +637,7 @@ def analyze_market(
         confidence = min(confidence, 55)
 
     risk = None
-    atr = _finite(latest.atr)
+    atr = atr_hint
     close = float(latest.close)
     displacement_confirmed, retest_target = _institutional_retest_setup(data, direction, atr)
     if displacement_confirmed and retest_target is not None:
@@ -676,6 +727,9 @@ def analyze_market(
             "lower_timeframe": lower_context.direction if lower_context else None,
             "displacement_confirmed": displacement_confirmed,
             "retest_target": round(retest_target, 5) if retest_target is not None else None,
+            "institutional_takeover_score": round(takeover_score, 1),
+            "institutional_takeover_direction": takeover_direction,
+            "institutional_takeover_level": round(takeover_level, 5) if takeover_level is not None else None,
         },
         timeframes=timeframe_context,
         features=feature_map,

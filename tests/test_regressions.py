@@ -18,6 +18,7 @@ from app.analysis import (
     _directional_pattern_score,
     _directional_rsi,
     _institutional_retest_setup,
+    _institutional_takeover_proxy,
     _suggested_lot_size,
     _take_profit_levels,
     trade_candidate_tier,
@@ -211,6 +212,21 @@ class InstitutionalRetestTests(unittest.TestCase):
         confirmed, target = _institutional_retest_setup(frame, "bullish", 1.0)
         self.assertTrue(confirmed)
         self.assertEqual(target, 100.0)
+
+    def test_takeover_proxy_requires_completed_structure_break_and_scores_displacement(self):
+        frame = pd.DataFrame(
+            {
+                "open": [99.5] * 21 + [99.8],
+                "high": [100.0] * 21 + [101.5],
+                "low": [99.0] * 21 + [99.7],
+                "close": [99.7] * 21 + [101.4],
+                "volume": [100] * 21 + [200],
+            }
+        )
+        direction, score, level = _institutional_takeover_proxy(frame, 1.0)
+        self.assertEqual(direction, "bullish")
+        self.assertGreaterEqual(score, 85)
+        self.assertEqual(level, 100.0)
 
 
 class LiveTimingTests(unittest.TestCase):
