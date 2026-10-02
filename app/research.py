@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 
 from app.factors import build_factor_breakdown
+from app.config import get_settings, holding_horizon_hours
+from app.market_data import interval_duration
 from app.models import Market
 from app.regime import classify_regime
 from app.strategy_engine import evaluate_strategies
@@ -40,12 +42,24 @@ def backtest_frame(
     frame: pd.DataFrame,
     market: Market,
     *,
-    minimum_strategy_score: float = 52.0,
-    reward_risk: float = 1.5,
-    horizon_bars: int = 12,
-    risk_fraction: float = 0.01,
+    minimum_strategy_score: float | None = None,
+    reward_risk: float | None = None,
+    horizon_bars: int | None = None,
+    risk_fraction: float | None = None,
+    interval: str = "1d",
 ) -> dict:
-    """Walk completed bars, enter on the next open, and resolve pessimistically."""
+    """Completed-candle simulation using the configured live target/cost/horizon policy.
+
+    Market history is still Yahoo/proxy data; this is not a broker-fill simulation.
+    """
+    settings = get_settings()
+    minimum_strategy_score = minimum_strategy_score if minimum_strategy_score is not None else settings.backtest_minimum_strategy_score
+    # Research must not silently use a different TP1 than live alerts.
+    reward_risk = reward_risk if reward_risk is not None else settings.take_profit_1_r
+    risk_fraction = risk_fraction if risk_fraction is not None else settings.backtest_risk_fraction
+    if horizon_bars is None:
+        duration_hours = max(interval_duration(interval).total_seconds() / 3600, 1)
+        horizon_bars = max(1, round(holding_horizon_hours(interval) / duration_hours))
     data = _prepared(frame)
     trades: list[dict] = []
     next_eligible_index = 60
@@ -79,12 +93,15 @@ def backtest_frame(
         if not selected:
             continue
         entry_bar = data.iloc[index + 1]
-        entry = float(entry_bar.open)
+        raw_entry = float(entry_bar.open)
         atr = float(current.atr)
         if atr <= 0:
             continue
+        estimated_bps = settings.execution_cost_bps_metal if market.category == "metal" else settings.execution_cost_bps_forex
+        cost = raw_entry * max(estimated_bps, 0.0) / 10_000.0
+        entry = raw_entry + cost if selected.direction == "bullish" else raw_entry - cost
         stop = entry - atr * 1.5 if selected.direction == "bullish" else entry + atr * 1.5
-        target = entry + atr * 1.5 * reward_risk if selected.direction == "bullish" else entry - atr * 1.5 * reward_risk
+        target = entry + abs(entry - stop) * reward_risk if selected.direction == "bullish" else entry - abs(entry - stop) * reward_risk
         outcome_r = None
         exit_price = float(data.iloc[index + horizon_bars].close)
         exit_index = index + horizon_bars
@@ -112,10 +129,16 @@ def backtest_frame(
                 "r_multiple": round(float(outcome_r), 4),
                 "regime": regime.trend,
                 "strategy_score": selected.score,
+                "holding_horizon_bars": horizon_bars,
+                "estimated_execution_cost_bps": estimated_bps,
             }
         )
         next_eligible_index = exit_index + 1
-    return {"metrics": performance_metrics(trades, risk_fraction=risk_fraction), "trades": trades}
+    return {"metrics": performance_metrics(trades, risk_fraction=risk_fraction), "trades": trades,
+            "policy": {"tp1_r": reward_risk, "holding_horizon_bars": horizon_bars,
+                       "holding_horizon_hours": holding_horizon_hours(interval),
+                       "estimated_execution_cost_bps": estimated_bps if 'estimated_bps' in locals() else None,
+                       "data_quality": "Yahoo/proxy candles; not broker-aligned fills"}}
 
 
 def performance_metrics(trades: list[dict], *, risk_fraction: float = 0.01) -> dict:
@@ -184,7 +207,7 @@ def monte_carlo(trades: list[dict], *, simulations: int = 1000, risk_fraction: f
     }
 
 
-def optimize_strategy(frame: pd.DataFrame, market: Market) -> dict:
+def optimize_strategy(frame: pd.DataFrame, market: Market, *, interval: str = "1d") -> dict:
     """Tune on the first 70% and report the winner on untouched later data."""
     split = max(80, int(len(frame) * 0.7))
     if len(frame) - split < 30:
@@ -197,7 +220,7 @@ def optimize_strategy(frame: pd.DataFrame, market: Market) -> dict:
     for minimum_score in (52.0, 60.0, 70.0):
         for reward_risk in (1.25, 1.5, 2.0):
             result = backtest_frame(
-                training, market, minimum_strategy_score=minimum_score, reward_risk=reward_risk
+                training, market, minimum_strategy_score=minimum_score, reward_risk=reward_risk, interval=interval
             )
             metrics = result["metrics"]
             candidates.append(
@@ -219,6 +242,7 @@ def optimize_strategy(frame: pd.DataFrame, market: Market) -> dict:
             market,
             minimum_strategy_score=best["minimum_score"],
             reward_risk=best["reward_risk"],
+            interval=interval,
         )
         validation_trades = [
             trade for trade in validation_result["trades"]

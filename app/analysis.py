@@ -344,10 +344,15 @@ def trade_candidate_tier(signal: Signal) -> str | None:
     # opposite lower-timeframe signal invalidates both alert tiers.
     if lower is not None and lower.direction not in {signal.direction, "neutral"}:
         return None
+    # Session is an execution-timing detail for multi-day swings, not a reason
+    # to reject an otherwise confirmed 4H/daily thesis.
+    session_ok = signal.interval in {"4h", "1d"} or (
+        signal.session.alignment == "aligned"
+        and bool(set(signal.session.active_sessions).intersection(signal.session.preferred_sessions))
+    )
     strict_entry_context = (
         signal.confidence >= settings.minimum_alert_confidence
-        and signal.session.alignment == "aligned"
-        and bool(set(signal.session.active_sessions).intersection(signal.session.preferred_sessions))
+        and session_ok
         and (lower is None or lower.direction == signal.direction)
     )
     selected = next(
@@ -549,7 +554,11 @@ def analyze_market(
         model_adjustment = 0.0
 
     if settings.enable_session_suggestions:
-        score = _apply_session_quality(score, session_signal.alignment, session_signal.score_adjustment)
+        session_adjustment = session_signal.score_adjustment
+        if interval in {"4h", "1d"}:
+            # Keep the message useful, but bound its influence on a swing thesis.
+            session_adjustment = max(-0.05, min(0.05, session_adjustment))
+        score = _apply_session_quality(score, session_signal.alignment, session_adjustment)
         if session_signal.alignment == "aligned":
             reasons.append(session_signal.suggestion)
         else:

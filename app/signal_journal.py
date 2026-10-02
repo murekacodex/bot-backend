@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from app.config import get_settings
+from app.config import get_settings, holding_horizon_hours
 from app.market_data import fetch_candles
 from app.markets import get_market
 from app.models import HistoricalEdge, Signal, SignalLogEntry, SignalOutcome, SignalOutcomeStats
@@ -275,15 +275,7 @@ def _resolve_entry(entry: dict[str, Any], now: datetime) -> bool:
         signal_time = _parse_time(str(entry.get("candle_time") or entry["generated_at"]))
     except (KeyError, ValueError):
         signal_time = now
-    horizon_hours = {
-        "1m": 1,
-        "5m": 3,
-        "15m": 6,
-        "30m": 12,
-        "1h": 24,
-        "4h": 72,
-        "1d": 168,
-    }.get(str(entry.get("interval")), settings.signal_outcome_horizon_hours)
+    horizon_hours = holding_horizon_hours(str(entry.get("interval")))
     horizon = timedelta(hours=horizon_hours)
     target_time = signal_time + horizon
 
@@ -295,15 +287,36 @@ def _resolve_entry(entry: dict[str, Any], now: datetime) -> bool:
     direction = str(entry["direction"])
     stop_loss = risk.get("stop_loss")
     take_profit = risk.get("take_profit_1")
+    take_profit_2 = risk.get("take_profit_2")
+    management = entry.setdefault("management", {"status": "open", "tp1_taken": False})
     for candle_time, candle in evaluation.iterrows():
+        if management.get("tp1_time") and pd.Timestamp(candle_time) <= pd.Timestamp(management["tp1_time"]):
+            # Never assume TP2 was reachable in the same OHLC candle as TP1.
+            continue
         if direction == "bullish" and stop_loss is not None and float(candle["low"]) <= float(stop_loss):
-            return _set_path_outcome(entry, now, float(stop_loss), False, "stop_loss", candle_time)
+            # After a TP1 partial, a break-even stop closes the remainder
+            # without turning a managed winner into a full loss.
+            partial = bool(management.get("tp1_taken"))
+            return _set_path_outcome(entry, now, float(stop_loss), partial, "break_even" if partial else "stop_loss", candle_time)
         if direction == "bearish" and stop_loss is not None and float(candle["high"]) >= float(stop_loss):
-            return _set_path_outcome(entry, now, float(stop_loss), False, "stop_loss", candle_time)
+            partial = bool(management.get("tp1_taken"))
+            return _set_path_outcome(entry, now, float(stop_loss), partial, "break_even" if partial else "stop_loss", candle_time)
         if direction == "bullish" and take_profit is not None and float(candle["high"]) >= float(take_profit):
-            return _set_path_outcome(entry, now, float(take_profit), True, "take_profit_1", candle_time)
+            if not management.get("tp1_taken") and take_profit_2 is not None:
+                management.update({"status": "tp1_taken", "tp1_taken": True, "tp1_time": pd.Timestamp(candle_time).isoformat(), "tp1_price": float(take_profit)})
+                risk["stop_loss"] = float(entry["entry_price"])
+                risk["take_profit_1"] = float(take_profit_2)
+                stop_loss, take_profit = risk["stop_loss"], risk["take_profit_1"]
+                continue
+            return _set_path_outcome(entry, now, float(take_profit), True, "take_profit_2" if management.get("tp1_taken") else "take_profit_1", candle_time)
         if direction == "bearish" and take_profit is not None and float(candle["low"]) <= float(take_profit):
-            return _set_path_outcome(entry, now, float(take_profit), True, "take_profit_1", candle_time)
+            if not management.get("tp1_taken") and take_profit_2 is not None:
+                management.update({"status": "tp1_taken", "tp1_taken": True, "tp1_time": pd.Timestamp(candle_time).isoformat(), "tp1_price": float(take_profit)})
+                risk["stop_loss"] = float(entry["entry_price"])
+                risk["take_profit_1"] = float(take_profit_2)
+                stop_loss, take_profit = risk["stop_loss"], risk["take_profit_1"]
+                continue
+            return _set_path_outcome(entry, now, float(take_profit), True, "take_profit_2" if management.get("tp1_taken") else "take_profit_1", candle_time)
 
     if now < target_time:
         return False
@@ -336,7 +349,7 @@ def _resolve_entry(entry: dict[str, Any], now: datetime) -> bool:
         move_pct=round(move * 100, 4),
         label=label,
         success=success,
-        reason=f"Neither stop nor target was hit; resolved at the {horizon_hours}h timeframe horizon",
+        reason=f"Time stop at the {horizon_hours}h swing horizon" + (" after TP1 partial" if management.get("tp1_taken") else ""),
     ).model_dump()
     return True
 

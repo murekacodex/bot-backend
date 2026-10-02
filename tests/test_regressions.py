@@ -376,9 +376,9 @@ class TelegramAlertTests(unittest.TestCase):
             risk=RiskPlan(entry=1.35, stop_loss=1.34, take_profit_1=1.365, take_profit_2=1.374, risk_reward=1.5, risk_percent=1, risk_amount=10, suggested_lot_size=.01),
             session=SessionSignal(current_session="new_york", active_sessions=["new_york"], preferred_sessions=["new_york"], alignment="aligned", suggestion="Entry", score_adjustment=.4, confidence=80, reasons=[]),
         )
-        self.assertIn("🟢 USDCAD · BULLISH · 1H", _message(signal))
-        self.assertIn("🛑  STOP LOSS   1.34", _message(signal))
-        self.assertIn("🎯  TAKE PROFIT 1   1.365", _message(signal))
+        self.assertIn("🟢 USDCAD  •  BULLISH  •  1H", _message(signal))
+        self.assertIn("│ Stop      1.34", _message(signal))
+        self.assertIn("│ TP1       1.365", _message(signal))
         self.assertEqual(_alert_key(signal), "entry_ready:USDCAD:1h:bullish:2026-01-01T11:00:00+00:00")
         keyboard = json.loads(_copy_keyboard(signal))
         self.assertEqual(keyboard["inline_keyboard"][0][1]["copy_text"]["text"], "1.34")

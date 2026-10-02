@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import threading
 import warnings
 
 import pandas as pd
@@ -8,6 +9,7 @@ from app.config import get_settings
 from app.models import Candle, Market
 
 _cache: dict[str, tuple[datetime, pd.DataFrame]] = {}
+_cache_lock = threading.Lock()
 
 _INTERVAL_DURATION = {
     "1m": timedelta(minutes=1),
@@ -65,21 +67,32 @@ def fetch_candles(market: Market, interval: str | None = None, period: str | Non
     key = _cache_key(market, selected_interval, selected_period)
     now = datetime.now(timezone.utc)
 
-    cached = _cache.get(key)
+    with _cache_lock:
+        cached = _cache.get(key)
     if cached and now - cached[0] < timedelta(seconds=settings.cache_ttl_seconds):
         return cached[1].copy()
 
     download_interval = "1h" if selected_interval == "4h" else selected_interval
-    frame = yf.download(
-        market.symbol,
-        interval=download_interval,
-        period=selected_period,
-        progress=False,
-        auto_adjust=False,
-        threads=False,
-    )
+    try:
+        frame = yf.download(
+            market.symbol,
+            interval=download_interval,
+            period=selected_period,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+            timeout=max(1, settings.yahoo_timeout_seconds),
+        )
+    except Exception as exc:
+        # Preserve a recent completed-candle view during a transient provider
+        # outage. Never synthesize a fresh bar or use stale data indefinitely.
+        if cached and now - cached[0] < timedelta(seconds=settings.market_data_stale_cache_seconds):
+            return cached[1].copy()
+        raise ValueError(f"Yahoo candle request failed for {market.code}: {exc}") from exc
 
     if frame.empty:
+        if cached and now - cached[0] < timedelta(seconds=settings.market_data_stale_cache_seconds):
+            return cached[1].copy()
         raise ValueError(f"No candle data returned for {market.code}")
 
     if isinstance(frame.columns, pd.MultiIndex):
@@ -102,7 +115,8 @@ def fetch_candles(market: Market, interval: str | None = None, period: str | Non
     if frame.empty:
         raise ValueError(f"No completed candle data returned for {market.code}")
 
-    _cache[key] = (now, frame)
+    with _cache_lock:
+        _cache[key] = (now, frame)
     return frame.copy()
 
 

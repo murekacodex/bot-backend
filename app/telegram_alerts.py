@@ -213,7 +213,7 @@ def _alert_scope(signal: Signal) -> str:
     A market can have opposing bullish and bearish setups on the same
     timeframe.  They must not share a WATCHLIST/ENTRY READY lifecycle.
     """
-    return f"{signal.market.code}:{signal.interval}:{signal.direction}"
+    return f"{signal.market.code}:{signal.interval}:{getattr(signal, 'direction', '')}"
 
 
 def _read_alert_state(path: Path) -> dict:
@@ -244,7 +244,15 @@ def active_alert_tier(signal: Signal) -> str | None:
     state_path = Path(get_settings().telegram_alert_state_path)
     with file_lock(state_path):
         state = _read_alert_state(state_path)
-    key = str(state["active_alerts"].get(_alert_scope(signal), {}).get("key") or "")
+    scope = _alert_scope(signal)
+    alert = state["active_alerts"].get(scope, {})
+    if not alert and not getattr(signal, "direction", None):
+        # Partial objects are used by admin/status tooling; only accept an
+        # unambiguous existing direction for that market/timeframe.
+        matches = [value for key, value in state["active_alerts"].items() if key.startswith(f"{signal.market.code}:{signal.interval}:")]
+        if len(matches) == 1:
+            alert = matches[0]
+    key = str(alert.get("key") or "")
     tier, _, _ = key.partition(":")
     return tier if tier in {"watchlist", "entry_ready"} else None
 
@@ -304,7 +312,7 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
     risk = signal.risk
     if risk is None:
         return ""
-    heading = "🚨 TRADE RIPE — ENTRY READY" if tier == "entry_ready" else "👀 SWING SETUP — WATCHING TARGET"
+    heading = "🚨  ENTRY READY" if tier == "entry_ready" else "👀  SWING WATCHLIST"
     direction_icon = "🟢" if signal.direction == "bullish" else "🔴"
     strategy = getattr(signal, "strategy", None) or "Multi-factor setup"
     regime = getattr(signal, "regime", None)
@@ -312,24 +320,29 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
     sessions = " / ".join(part.replace("_", " ").title() for part in signal.session.active_sessions) if signal.session else "Unknown"
     live = getattr(signal, "live_quote", None)
     retest_target = (getattr(signal, "indicators", {}) or {}).get("retest_target")
+    time_label = signal.timestamp.replace("T", " ").replace("+00:00", " UTC")
+    entry_note = (
+        "✅ Timing confirmed — verify the quote and spread in your broker before placing any order."
+        if tier == "entry_ready"
+        else "⏳ Wait for price to retest and directional momentum to return; this is not an entry yet."
+    )
     return "\n".join(
         (
             f"{heading}",
-            f"{direction_icon} {signal.market.code} · {signal.direction.upper()} · {signal.interval.upper()}",
+            f"{direction_icon} {signal.market.code}  •  {signal.direction.upper()}  •  {signal.interval.upper()}",
+            f"🕒 Closed candle: {time_label}",
             "",
-            "━━━━━━━━ TRADE LEVELS ━━━━━━━━",
-            f"➡️  ENTRY   {risk.entry}",
-            f"📍  RETEST TARGET   {retest_target if retest_target is not None else risk.entry}",
-            f"🛑  STOP LOSS   {risk.stop_loss}",
-            f"🎯  TAKE PROFIT 1   {risk.take_profit_1}",
-            f"🎯  TAKE PROFIT 2   {risk.take_profit_2}",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "┌─ TRADE PLAN ─────────────",
+            f"│ Entry     {risk.entry}",
+            f"│ Stop      {risk.stop_loss}",
+            f"│ TP1       {risk.take_profit_1}  ({risk.risk_reward:.2f}R)",
+            f"│ TP2       {risk.take_profit_2}",
+            f"│ Risk      {risk.risk_percent:.2f}%  •  {risk.risk_amount:.2f} {get_settings().account_currency}",
+            "└──────────────────────────",
             "",
-            f"Strategy: {strategy}",
-            f"Regime: {regime.trend.title() if regime else 'Unknown'} / {regime.volatility.title() if regime else 'Unknown'} volatility",
-            f"Session: {sessions}",
-            f"Confidence: {signal.confidence}%",
-            f"Score: {signal.score}",
+            f"📌 {strategy}",
+            f"📊 {regime.trend.title() if regime else 'Unknown'} trend · {regime.volatility.title() if regime else 'Unknown'} volatility",
+            f"🧭 Session: {sessions}  |  Confidence: {signal.confidence}%",
             (
                 f"Live timing: {live.source}, 1m {live.micro_direction}, spread {live.spread_bps:.1f} bps"
                 if live else "Live timing: unavailable"
@@ -340,14 +353,11 @@ def _message(signal: Signal, tier: str = "entry_ready") -> str:
                 else "Recent edge: collecting evidence"
             ),
             (
-                "Live timing is confirmed. Verify price and spread with your broker before entering."
-                if tier == "entry_ready"
-                else (
-                    f"Displacement through structure detected. Watching the retracement back to "
-                    f"{retest_target if retest_target is not None else risk.entry}; wait for directional resumption "
-                    "and the TRADE RIPE alert before entering."
-                )
+                f"📍 Retest reference: {retest_target if retest_target is not None else risk.entry}"
+                if tier == "watchlist" else ""
             ),
+            "",
+            entry_note,
         )
     )
 
@@ -453,13 +463,17 @@ def send_market_update(signals: list[Signal]) -> bool:
 
     strongest = sorted(signals, key=lambda item: abs(item.score), reverse=True)[:3]
     summary = "\n".join(
-        f"• {signal.market.code}: {signal.direction}, score {signal.score}, confidence {signal.confidence}%"
+        f"{('🟢' if signal.direction == 'bullish' else '🔴' if signal.direction == 'bearish' else '⚪')} "
+        f"{signal.market.code}  {signal.direction.upper()}  ·  {getattr(signal, 'interval', 'swing').upper()}  ·  {signal.confidence}%"
         for signal in strongest
     )
     text = (
-        "ℹ️ MARKET UPDATE\n\n"
-        "The scanner is running, but no setup currently meets the entry or watchlist rules.\n\n"
-        f"Strongest readings:\n{summary}"
+        "📡  MARKET PULSE\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "No setup currently meets the swing watchlist or entry rules.\n\n"
+        "Strongest completed-candle readings\n"
+        f"{summary}\n\n"
+        "The scanner remains active. A new update arrives when a qualified setup appears."
     )
     try:
         chat_ids = _authorized_chat_ids()

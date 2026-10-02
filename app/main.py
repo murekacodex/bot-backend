@@ -153,8 +153,8 @@ SUPPORTED_TIMEFRAMES = {
     "15m": {"1d", "5d", "1mo"},
     "30m": {"1d", "5d", "1mo"},
     "1h": {"5d", "1mo", "3mo"},
-    "4h": {"1mo", "3mo"},
-    "1d": {"3mo"},
+    "4h": {"1mo", "3mo", "6mo"},
+    "1d": {"3mo", "1y", "2y", "5y"},
 }
 
 
@@ -253,7 +253,9 @@ def resolve_signal_log(_: UserPublic = Depends(admin_user)) -> SignalOutcomeStat
 
 @app.get("/signal-log/stats", response_model=SignalOutcomeStats)
 def signal_log_stats(_: UserPublic = Depends(current_user)) -> SignalOutcomeStats:
-    resolve_signal_outcomes()
+    # Resolving every pending journal item may issue many historical-provider
+    # requests. The worker/admin resolver owns that job so opening the website
+    # remains responsive even when Yahoo is slow.
     return signal_outcome_stats()
 
 
@@ -273,14 +275,14 @@ def strategy_backtest(
     code: str,
     interval: str = Query(default="1d", pattern="^(1h|4h|1d)$"),
     period: str = Query(default="5y", pattern="^(1y|2y|5y|10y)$"),
-    minimum_score: float = Query(default=52, ge=40, le=90),
-    reward_risk: float = Query(default=1.5, ge=1, le=4),
+    minimum_score: float | None = Query(default=None, ge=40, le=90),
+    reward_risk: float | None = Query(default=None, ge=0.1, le=4),
     _: UserPublic = Depends(current_user),
 ) -> dict:
     market = get_market(code)
     frame = fetch_candles(market, interval=interval, period=period)
     result = backtest_frame(
-        frame, market, minimum_strategy_score=minimum_score, reward_risk=reward_risk
+        frame, market, minimum_strategy_score=minimum_score, reward_risk=reward_risk, interval=interval,
     )
     result["trades"] = result["trades"][-250:]
     return result
@@ -295,7 +297,7 @@ def strategy_monte_carlo(
     _: UserPublic = Depends(current_user),
 ) -> dict:
     market = get_market(code)
-    backtest = backtest_frame(fetch_candles(market, interval=interval, period=period), market)
+    backtest = backtest_frame(fetch_candles(market, interval=interval, period=period), market, interval=interval)
     return {"backtest_metrics": backtest["metrics"], "simulation": monte_carlo(backtest["trades"], simulations=simulations)}
 
 
@@ -307,7 +309,7 @@ def strategy_optimization(
     _: UserPublic = Depends(admin_user),
 ) -> dict:
     market = get_market(code)
-    return optimize_strategy(fetch_candles(market, interval=interval, period=period), market)
+    return optimize_strategy(fetch_candles(market, interval=interval, period=period), market, interval=interval)
 
 
 @app.get("/research/attribution")

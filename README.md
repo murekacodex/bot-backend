@@ -37,6 +37,8 @@ Environment variables:
 - `DEFAULT_INTERVAL`: default candle interval, for example `15m`, `1h`, `1d`.
 - `DEFAULT_PERIOD`: default yfinance period, for example `5d`, `1mo`.
 - `CACHE_TTL_SECONDS`: how long fetched candles stay cached.
+- `MARKET_DATA_STALE_CACHE_SECONDS`: maximum age of a completed-candle cache returned during a transient Yahoo outage (default `900`).
+- `YAHOO_TIMEOUT_SECONDS`: cap on a Yahoo candle request before the cache/error path is used (default `12`).
 - `BOT_POLL_SECONDS`: worker polling interval.
 - `ENABLE_NEWS_ANALYSIS`: include Yahoo Finance news sentiment in signal decisions.
 - `NEWS_CACHE_TTL_SECONDS`: how long news sentiment stays cached.
@@ -65,6 +67,8 @@ Environment variables:
 - `TAKE_PROFIT_1_R` / `TAKE_PROFIT_2_R`: take-profit distances as multiples of the capped stop distance; defaults to `1.0R` and `1.5R`.
 - `SIGNAL_LOG_PATH`: file path used to persist generated signal history and outcomes.
 - `SIGNAL_OUTCOME_HORIZON_HOURS`: minimum age before a logged signal can be scored.
+- `SWING_HORIZON_4H_HOURS` / `SWING_HORIZON_1D_HOURS`: shared 4H/daily time-stop policy used by journal resolution and research (defaults `72` / `168`).
+- `BACKTEST_RISK_FRACTION`, `BACKTEST_MINIMUM_STRATEGY_SCORE`: default research controls. Backtests use the live TP1 and estimated execution-cost settings unless explicitly overridden.
 - `SIGNAL_OUTCOME_MIN_MOVE_PCT`: minimum realized move used to decide if a signal succeeded.
 - `EDGE_MIN_SAMPLES`: resolved comparable signals required before historical edge affects scoring.
 - `EDGE_MAX_SAMPLES`: maximum recent outcomes included in an edge estimate.
@@ -120,6 +124,19 @@ Research endpoints:
 
 Backtests include pessimistic same-candle stop/target ordering and do not use a
 forming candle. Results are research estimates, not profitability guarantees.
+
+The trade journal manages a paper lifecycle: TP1 records a partial, moves the
+remaining stop to break-even, then tracks TP2 or the configured time stop. It
+does not place or modify broker orders.
+
+## Deferred external integrations
+
+Yahoo candles (including resampled 4H) and futures proxies remain research/
+fallback data. Broker-aligned candle history and CFD symbol mapping require the
+broker account/API configuration and are intentionally not inferred. Likewise,
+the economic-calendar blackout is not enabled until a licensed calendar provider
+and currency-impact mapping are configured; generic headline sentiment remains
+context only.
 
 Historical winner similarity is never a hard market filter. The live engine uses
 recent R-multiple expectancy only after the minimum sample count is reached,

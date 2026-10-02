@@ -5,8 +5,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ANALYSIS_TIMEFRAMES = {
-    "4h": "1mo",
-    "1d": "3mo",
+    # Enough completed history for indicator warm-up and swing-regime context.
+    # Yahoo's hourly retention caps this practical 4H proxy at roughly 2 years.
+    "4h": "6mo",
+    "1d": "2y",
 }
 
 
@@ -25,6 +27,8 @@ class Settings(BaseSettings):
     # Completed 4h/daily candles are still enforced by market_data, so this
     # does not turn an in-progress swing candle into a trade signal.
     cache_ttl_seconds: int = Field(default=45, alias="CACHE_TTL_SECONDS")
+    market_data_stale_cache_seconds: int = Field(default=900, alias="MARKET_DATA_STALE_CACHE_SECONDS")
+    yahoo_timeout_seconds: int = Field(default=12, alias="YAHOO_TIMEOUT_SECONDS")
     bot_poll_seconds: int = Field(default=60, alias="BOT_POLL_SECONDS")
     enable_news_analysis: bool = Field(default=True, alias="ENABLE_NEWS_ANALYSIS")
     news_cache_ttl_seconds: int = Field(default=900, alias="NEWS_CACHE_TTL_SECONDS")
@@ -66,6 +70,12 @@ class Settings(BaseSettings):
     execution_cost_bps_metal: float = Field(default=3.0, alias="EXECUTION_COST_BPS_METAL")
     signal_log_path: str = Field(default="data/signal_log.json", alias="SIGNAL_LOG_PATH")
     signal_outcome_horizon_hours: int = Field(default=72, alias="SIGNAL_OUTCOME_HORIZON_HOURS")
+    swing_horizon_4h_hours: int = Field(default=72, alias="SWING_HORIZON_4H_HOURS")
+    swing_horizon_1d_hours: int = Field(default=168, alias="SWING_HORIZON_1D_HOURS")
+    # A target hit is only simulated after estimated round-trip execution cost.
+    # This is an estimate until broker fills/candles are connected.
+    backtest_risk_fraction: float = Field(default=0.01, alias="BACKTEST_RISK_FRACTION")
+    backtest_minimum_strategy_score: float = Field(default=52.0, alias="BACKTEST_MINIMUM_STRATEGY_SCORE")
     signal_outcome_min_move_pct: float = Field(default=0.0015, alias="SIGNAL_OUTCOME_MIN_MOVE_PCT")
     edge_min_samples: int = Field(default=30, alias="EDGE_MIN_SAMPLES")
     edge_max_samples: int = Field(default=100, alias="EDGE_MAX_SAMPLES")
@@ -113,3 +123,12 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def holding_horizon_hours(interval: str) -> int:
+    """Single holding policy used by journal resolution and research."""
+    settings = get_settings()
+    return {
+        "4h": settings.swing_horizon_4h_hours,
+        "1d": settings.swing_horizon_1d_hours,
+    }.get(interval, settings.signal_outcome_horizon_hours)
