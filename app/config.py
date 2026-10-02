@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Completed 4h/daily candles are still enforced by market_data, so this
     # does not turn an in-progress swing candle into a trade signal.
     cache_ttl_seconds: int = Field(default=45, alias="CACHE_TTL_SECONDS")
+    signal_response_cache_seconds: int = Field(default=90, alias="SIGNAL_RESPONSE_CACHE_SECONDS")
     market_data_stale_cache_seconds: int = Field(default=900, alias="MARKET_DATA_STALE_CACHE_SECONDS")
     yahoo_timeout_seconds: int = Field(default=12, alias="YAHOO_TIMEOUT_SECONDS")
     bot_poll_seconds: int = Field(default=60, alias="BOT_POLL_SECONDS")

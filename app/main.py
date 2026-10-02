@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import threading
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,8 @@ from app.timeframes import timeframe_contexts
 settings = get_settings()
 settings.validate_security()
 learner = AdaptiveSignalModel()
+_signal_response_cache: dict[tuple[str, str, str | None, bool, bool], tuple[datetime, list[Signal]]] = {}
+_signal_response_cache_lock = threading.Lock()
 
 app = FastAPI(
     title="Forex Signal Bot",
@@ -176,6 +179,12 @@ def signals(
 ) -> list[Signal]:
     if not all_timeframes:
         validate_timeframe(interval, period)
+    cache_key = (interval, period, category, include_news, include_closed)
+    now = datetime.now(timezone.utc)
+    with _signal_response_cache_lock:
+        cached = _signal_response_cache.get(cache_key)
+    if cached and now - cached[0] < timedelta(seconds=settings.signal_response_cache_seconds):
+        return cached[1]
     output: list[Signal] = []
     errors: list[str] = []
     analyzed_count = 0
@@ -232,6 +241,8 @@ def signals(
 
     sorted_output = sorted(output, key=lambda signal: signal.confidence, reverse=True)
     record_signals(sorted_output, source="api_bulk")
+    with _signal_response_cache_lock:
+        _signal_response_cache[cache_key] = (now, sorted_output)
     return sorted_output
 
 
